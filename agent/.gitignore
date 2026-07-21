@@ -1,0 +1,6 @@
+# Only ignore OS junk and Python bytecode.
+# dist/, harness/results/, decks, binaries, etc. are all tracked on purpose.
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo

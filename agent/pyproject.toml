@@ -1,0 +1,14 @@
+[project]
+name = "ptcg-agent"
+version = "0.1.0"
+description = "Pokemon TCG AI Battle agent (heuristic + PIMC search)"
+requires-python = ">=3.10"
+# Runtime deps: stdlib + vendored `cg` only. Nothing here on purpose.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "pandas"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
