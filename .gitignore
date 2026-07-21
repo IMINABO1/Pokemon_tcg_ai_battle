@@ -1,0 +1,7 @@
+# Only ignore OS junk and Python bytecode.
+# Everything else (PDFs, CSVs, binaries, dist/, submission_logs/, replays) is
+# tracked on purpose so teammates / another laptop see the full picture.
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
