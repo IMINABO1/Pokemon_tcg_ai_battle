@@ -1,118 +1,159 @@
-"""Card knowledge base.
+"""Card knowledge base and deck legality validation."""
+import sys
+from pathlib import Path
+from typing import Callable, Optional, Union
 
-Loads once at import from the compiled engine (`cg.api.all_card_data()` / `all_attack()`),
-NOT from the CSVs (those are offline human-research artifacts). Pure / side-effect-free
-after load.
-
-Deliberately out of scope for Phase 1: a general attack/ability text parser. The real
-search engine (`state.step()` via search_begin/search_step) is the ground truth for what a
-move *does*; the heuristic here only needs to score resulting states and cheaply prune
-implausible moves.
-"""
-from __future__ import annotations
-
-from cg.api import (
-    all_card_data,
-    all_attack,
-    CardData,
-    Attack,
-    CardType,
-    EnergyType,
-)
-
-# ---------------------------------------------------------------------------
-# One-time load
-# ---------------------------------------------------------------------------
-_ALL_CARDS: list[CardData] = all_card_data()
-_ALL_ATTACKS: list[Attack] = all_attack()
-
-CARD_BY_ID: dict[int, CardData] = {c.cardId: c for c in _ALL_CARDS}
-ATTACK_BY_ID: dict[int, Attack] = {a.attackId: a for a in _ALL_ATTACKS}
-
-# name -> list of card ids sharing that name (different arts/prints share a name).
-CARDS_BY_NAME: dict[str, list[int]] = {}
-for _c in _ALL_CARDS:
-    CARDS_BY_NAME.setdefault(_c.name, []).append(_c.cardId)
-
-BASIC_ENERGY_IDS: frozenset[int] = frozenset(
-    c.cardId for c in _ALL_CARDS if c.cardType == CardType.BASIC_ENERGY
-)
-ACE_SPEC_IDS: frozenset[int] = frozenset(c.cardId for c in _ALL_CARDS if c.aceSpec)
-
-# Energy types that satisfy *any* colored requirement.
-_WILD_ENERGY = frozenset({EnergyType.RAINBOW})
+# Ensure sample_submission cg is available if not already in sys.path
+try:
+    from cg.api import (
+        all_card_data, all_attack, CardData, Attack, CardType, EnergyType
+    )
+except ImportError:
+    possible_cg = Path(__file__).resolve().parent.parent.parent.parent / "sample_submission" / "sample_submission"
+    if possible_cg.exists() and str(possible_cg) not in sys.path:
+        sys.path.insert(0, str(possible_cg))
+    from cg.api import (
+        all_card_data, all_attack, CardData, Attack, CardType, EnergyType
+    )
 
 
-def is_basic_energy(card_id: int) -> bool:
-    return card_id in BASIC_ENERGY_IDS
+class CardDatabase:
+    """Singleton-style card database populated from cg.api."""
+    _instance: Optional["CardDatabase"] = None
+
+    def __init__(self):
+        self.cards: list[CardData] = all_card_data()
+        self.attacks: list[Attack] = all_attack()
+
+        self.card_by_id: dict[int, CardData] = {c.cardId: c for c in self.cards}
+        self.attack_by_id: dict[int, Attack] = {a.attackId: a for a in self.attacks}
+
+        self.cards_by_name: dict[str, list[CardData]] = {}
+        for c in self.cards:
+            self.cards_by_name.setdefault(c.name, []).append(c)
+
+        self.basic_energy_ids: set[int] = {
+            c.cardId for c in self.cards if c.cardType == CardType.BASIC_ENERGY
+        }
+        self.ace_spec_ids: set[int] = {c.cardId for c in self.cards if c.aceSpec}
+        self.basic_pokemon_ids: set[int] = {
+            c.cardId for c in self.cards if c.cardType == CardType.POKEMON and c.basic
+        }
+
+    @classmethod
+    def get_instance(cls) -> "CardDatabase":
+        if cls._instance is None:
+            cls._instance = CardDatabase()
+        return cls._instance
 
 
-def is_pokemon(card_id: int) -> bool:
-    c = CARD_BY_ID.get(card_id)
-    return c is not None and c.cardType == CardType.POKEMON
+# Initialize singleton database instance
+_DB = CardDatabase.get_instance()
+
+# Module-level alias exports for backward compatibility & direct access
+CARD_BY_ID = _DB.card_by_id
+ATTACK_BY_ID = _DB.attack_by_id
+CARDS_BY_NAME = _DB.cards_by_name
+BASIC_ENERGY_IDS = _DB.basic_energy_ids
+ACE_SPEC_IDS = _DB.ace_spec_ids
+BASIC_POKEMON_IDS = _DB.basic_pokemon_ids
 
 
-def is_basic_pokemon(card_id: int) -> bool:
-    c = CARD_BY_ID.get(card_id)
-    return c is not None and c.cardType == CardType.POKEMON and c.basic
+def get_card_db() -> CardDatabase:
+    return CardDatabase.get_instance()
 
 
-# ---------------------------------------------------------------------------
-# Energy cost feasibility (cheap filter, NOT authoritative — engine is ground truth)
-# ---------------------------------------------------------------------------
+def is_basic_energy(cid: int) -> bool:
+    return cid in BASIC_ENERGY_IDS
+
+
+def is_basic_pokemon(cid: int) -> bool:
+    return cid in BASIC_POKEMON_IDS
+
+
 def energy_cost_met(attack: Attack, attached: list[EnergyType]) -> bool:
-    """True if `attached` energies can plausibly pay `attack.energies`.
-
-    COLORLESS requirements are paid by any energy; RAINBOW attached energy pays any
-    requirement. This is a first-order feasibility check for move-generation pruning
-    and opponent-hand plausibility — the real engine remains the authority on legality.
+    """Check if attached energies satisfy the attack cost requirements.
+    
+    Colorless energy costs can be satisfied by any energy type.
+    Rainbow energy can satisfy any specific typed requirement or colorless.
     """
-    required = list(attack.energies)
-    pool = list(attached)
+    if not attack.energies:
+        return True
+    
+    attached_counts = {}
+    rainbow_count = 0
 
-    # Pay the specific colored requirements first (colorless is the flexible remainder).
-    colored = [e for e in required if e != EnergyType.COLORLESS]
-    colorless_count = len(required) - len(colored)
-
-    for req in colored:
-        # exact-type match preferred, else a wild (rainbow) energy.
-        if req in pool:
-            pool.remove(req)
+    for e in attached:
+        e_val = int(e)
+        if e_val == int(EnergyType.RAINBOW):
+            rainbow_count += 1
         else:
-            wild = next((e for e in pool if e in _WILD_ENERGY), None)
-            if wild is None:
+            attached_counts[e_val] = attached_counts.get(e_val, 0) + 1
+
+    colorless_req = 0
+    for req in attack.energies:
+        req_val = int(req)
+        if req_val == int(EnergyType.COLORLESS):
+            colorless_req += 1
+        else:
+            if attached_counts.get(req_val, 0) > 0:
+                attached_counts[req_val] -= 1
+            elif rainbow_count > 0:
+                rainbow_count -= 1
+            else:
                 return False
-            pool.remove(wild)
+    
+    remaining_attached = sum(attached_counts.values()) + rainbow_count
+    return remaining_attached >= colorless_req
 
-    # Remaining pool pays the colorless portion (any energy counts).
-    return len(pool) >= colorless_count
 
-
-# ---------------------------------------------------------------------------
-# First-order damage estimate (base + weakness/resistance only)
-# ---------------------------------------------------------------------------
-def compute_damage(attack: Attack, defender: CardData) -> int:
-    """First-order damage estimate: base damage adjusted for weakness / resistance.
-
-    Explicitly does NOT parse conditional attack text (e.g. "+30 if...", coin flips,
-    damage-counter effects). For those the real engine is the source of truth. A small
-    hand-curated override table can extend this later for our key cards / common threats.
+def compute_damage(
+    arg1: Union[CardData, Attack],
+    arg2: CardData,
+    defender: Optional[CardData] = None,
+    tools: Optional[list[CardData]] = None,
+    boosts: int = 0
+) -> int:
+    """Damage estimation function supporting both:
+    - compute_damage(attack, defender)
+    - compute_damage(attacker, attack, defender, tools, boosts)
     """
-    dmg = attack.damage
-    if dmg <= 0 or defender is None:
-        return max(dmg, 0)
+    if isinstance(arg1, Attack):
+        attack = arg1
+        def_card = arg2
+        attacker_card = None
+    else:
+        attacker_card = arg1
+        attack = arg2  # type: ignore
+        def_card = defender  # type: ignore
 
-    atk_type = _attack_type(attack)
-    if defender.weakness is not None and atk_type == defender.weakness:
-        dmg *= 2
-    if defender.resistance is not None and atk_type == defender.resistance:
-        dmg = max(0, dmg - 30)  # standard resistance reduction
-    return dmg
+    base_dmg = attack.damage + boosts
+
+    if tools and def_card:
+        for tool in tools:
+            if tool.name == "Maximum Belt" and getattr(def_card, "ex", False):
+                base_dmg += 50
+
+    if base_dmg <= 0 or def_card is None:
+        return max(0, base_dmg)
+
+    # Weakness (x2 in PTCG)
+    energy_type = attacker_card.energyType if attacker_card else (attack.energies[0] if attack.energies else None)
+    if energy_type and def_card.weakness is not None and int(def_card.weakness) == int(energy_type):
+        base_dmg *= 2
+
+    # Resistance (-30 in modern PTCG)
+    if energy_type and def_card.resistance is not None and int(def_card.resistance) == int(energy_type):
+        base_dmg = max(0, base_dmg - 30)
 
 
-def _attack_type(attack: Attack) -> EnergyType | None:
-    """Best-effort attacking type: first non-colorless required energy."""
-    for e in attack.energies:
-        if e != EnergyType.COLORLESS:
-            return e
-    return None
+    return base_dmg
+
+
+def validate_deck_legality(deck_card_ids: list[int]) -> tuple[bool, str]:
+    """Validate a 60-card deck against PTCG rules."""
+    from .legality import deck_violations
+    reasons = deck_violations(deck_card_ids)
+    if reasons:
+        return False, "; ".join(reasons)
+    return True, "Deck is legal."

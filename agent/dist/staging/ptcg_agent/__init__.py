@@ -1,1 +1,2 @@
-"""ptcg_agent — heuristic + PIMC search agent for the Pokemon TCG AI Battle."""
+"""PTCG Agent package."""
+__version__ = "0.1.0"

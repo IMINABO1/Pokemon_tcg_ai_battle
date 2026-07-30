@@ -1,0 +1,6 @@
+match_id,name0,name1,winner,winner_name,actions,duration,error
+1,PIMC_Agent,Random_Agent,1,Random_Agent,42,0.75,
+2,PIMC_Agent,Random_Agent,1,Random_Agent,48,0.625,
+0,PIMC_Agent,Random_Agent,1,Random_Agent,104,2.061999999998079,
+3,PIMC_Agent,Random_Agent,0,PIMC_Agent,33,0.75,
+4,PIMC_Agent,Random_Agent,1,Random_Agent,125,1.8280000000013388,
