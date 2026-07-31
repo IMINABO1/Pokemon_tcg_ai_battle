@@ -1,9 +1,11 @@
 """Configuration constants and evaluation weights for PTCG Agent."""
 
 PER_DECISION_BUDGET_SECONDS: float = 2.0
-NUM_DETERMINIZATIONS: int = 6
-MAX_SEARCH_DEPTH: int = 3
-MAX_ACTION_CANDIDATES: int = 8
+NUM_DETERMINIZATIONS: int = 8
+MAX_SEARCH_DEPTH: int = 4
+MAX_ACTION_CANDIDATES: int = 10
+# Retries when a sampled determinization fails the legality gate before falling back.
+DETERMINIZATION_LEGALITY_RETRIES: int = 4
 
 EVAL_WEIGHTS = {
     # Prize differential: dominant term (your prizes taken - opponent's prizes taken)
@@ -13,8 +15,8 @@ EVAL_WEIGHTS = {
     # Active lethal-threat term (can KO active / active is lethal)
     "can_ko_active": 40.0,
     "active_in_danger": -35.0,
-    # Board HP swing (your HP sum - opponent HP sum)
-    "hp_swing": 0.1,
+    # Board HP swing (sum of remaining-HP fractions, ours minus theirs; range ~[-6, 6])
+    "hp_swing": 8.0,
     # Energy tempo: attached energy count + attack-affordability
     "energy_attached": 10.0,
     "attack_ready": 25.0,

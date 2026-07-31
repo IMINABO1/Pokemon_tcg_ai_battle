@@ -27,10 +27,12 @@ except ImportError:
 
 
 
-# Global state persistent across decisions within a process
+# Trackers persist across decisions within a process, keyed by our player index so a
+# single process driving both seats (self-play in the local harness) keeps each seat's
+# belief/bookkeeping separate. In the real Kaggle runtime we are always one fixed index.
 _FULL_DECK_IDS: Optional[list[int]] = None
-_STATE_TRACKER: Optional[StateTracker] = None
-_BELIEF_TRACKER: Optional[OpponentBelief] = None
+_STATE_TRACKERS: dict[int, StateTracker] = {}
+_BELIEF_TRACKERS: dict[int, OpponentBelief] = {}
 
 
 def read_deck_csv() -> list[int]:
@@ -48,12 +50,14 @@ def read_deck_csv() -> list[int]:
     return [int(lines[i]) for i in range(min(60, len(lines)))]
 
 
-def _init_trackers():
-    global _FULL_DECK_IDS, _STATE_TRACKER, _BELIEF_TRACKER
+def _get_trackers(your_index: int) -> tuple[StateTracker, OpponentBelief]:
+    global _FULL_DECK_IDS
     if _FULL_DECK_IDS is None:
         _FULL_DECK_IDS = read_deck_csv()
-        _STATE_TRACKER = StateTracker(_FULL_DECK_IDS)
-        _BELIEF_TRACKER = OpponentBelief()
+    if your_index not in _STATE_TRACKERS:
+        _STATE_TRACKERS[your_index] = StateTracker(_FULL_DECK_IDS)
+        _BELIEF_TRACKERS[your_index] = OpponentBelief()
+    return _STATE_TRACKERS[your_index], _BELIEF_TRACKERS[your_index]
 
 
 def _fallback_decide(obs: Observation) -> list[int]:
@@ -78,9 +82,33 @@ def _fallback_decide(obs: Observation) -> list[int]:
     return list(range(count))
 
 
+def _yes_option_index(options) -> int:
+    """Index of the YES option (branch on Option.type, never on order)."""
+    for i, opt in enumerate(options):
+        if opt.type == OptionType.YES:
+            return i
+    return 0
+
+
+def _max_number_option_index(options) -> int:
+    """Index of the COUNT/NUMBER option with the largest `number` value.
+
+    The engine expects an option index, not the count value itself. Aggressive
+    decks generally want the largest available count (draw/place more); the rare
+    "discard N" prompts are the accepted downside of keying only on SelectType.
+    """
+    best_i, best_n = 0, None
+    for i, opt in enumerate(options):
+        n = opt.number if opt.number is not None else 0
+        if best_n is None or n > best_n:
+            best_i, best_n = i, n
+    return best_i
+
+
 def _decide(obs: Observation) -> list[int]:
-    _init_trackers()
-    _BELIEF_TRACKER.update_from_logs(obs)
+    your_index = obs.current.yourIndex if obs.current else 0
+    state_tracker, belief = _get_trackers(your_index)
+    belief.update_from_logs(obs)
 
     select = obs.select
     stype = select.type
@@ -93,13 +121,11 @@ def _decide(obs: Observation) -> list[int]:
 
     # Fast path for YES_NO prompts (prefer YES for positive actions)
     if stype == SelectType.YES_NO:
-        # Default YES (option 0)
-        return [0]
+        return [_yes_option_index(options)]
 
     # Fast path for COUNT prompts (e.g. draw count or damage counter count)
     if stype == SelectType.COUNT:
-        # Choose max count
-        return [select.maxCount]
+        return [_max_number_option_index(options)]
 
     # Fast path for SPECIAL_CONDITION
     if stype == SelectType.SPECIAL_CONDITION:
@@ -107,7 +133,7 @@ def _decide(obs: Observation) -> list[int]:
 
     # For MAIN phase and strategic choices, run PIMC search
     budget = BudgetTracker()
-    action = search_pimc_action(obs, _STATE_TRACKER, _BELIEF_TRACKER, budget)
+    action = search_pimc_action(obs, state_tracker, belief, budget)
 
     log_decision(
         state_turn=obs.current.turn if obs.current else 0,

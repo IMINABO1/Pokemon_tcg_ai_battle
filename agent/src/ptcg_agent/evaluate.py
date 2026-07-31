@@ -30,21 +30,20 @@ def _score_prizes(me: PlayerState, opp: PlayerState) -> float:
     )
 
 
+def _hp_fraction_sum(player: PlayerState) -> float:
+    total = 0.0
+    pokemons = []
+    if player.active and player.active[0]:
+        pokemons.append(player.active[0])
+    pokemons.extend(player.bench)
+    for p in pokemons:
+        if p.maxHp > 0:
+            total += p.hp / p.maxHp
+    return total
+
+
 def _score_hp(me: PlayerState, opp: PlayerState) -> float:
-    my_total_hp = 0
-    opp_total_hp = 0
-
-    if me.active and me.active[0]:
-        my_total_hp += me.active[0].hp
-    for p in me.bench:
-        my_total_hp += p.hp
-
-    if opp.active and opp.active[0]:
-        opp_total_hp += opp.active[0].hp
-    for p in opp.bench:
-        opp_total_hp += p.hp
-
-    hp_diff = my_total_hp - opp_total_hp
+    hp_diff = _hp_fraction_sum(me) - _hp_fraction_sum(opp)
     return hp_diff * EVAL_WEIGHTS["hp_swing"]
 
 
