@@ -19,6 +19,7 @@ except ImportError:
 from .budget import BudgetTracker
 from .determinize import StateTracker, OpponentBelief
 from .search import search_pimc_action, enumerate_candidate_actions
+from . import stats
 try:
     from .logging_utils import log_decision
 except ImportError:
@@ -122,6 +123,7 @@ def _decide(obs: Observation) -> list[int]:
 
 def agent_decide(obs_dict: dict) -> list[int]:
     """Main policy entrypoint."""
+    stats.incr("decisions")
     try:
         obs: Observation = to_observation_class(obs_dict)
         if obs.select is None:
@@ -129,6 +131,7 @@ def agent_decide(obs_dict: dict) -> list[int]:
         return _decide(obs)
     except Exception as e:
         # Exception handler bails safely to fallback
+        stats.incr("decision_fallback")
         try:
             obs_obj = to_observation_class(obs_dict) if obs_dict else None
             return _fallback_decide(obs_obj)

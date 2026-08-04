@@ -3,12 +3,12 @@ import sys
 from pathlib import Path
 
 try:
-    from cg.api import State, PlayerState, Pokemon, CardType
+    from cg.api import State, PlayerState, Pokemon
 except ImportError:
     possible_cg = Path(__file__).resolve().parent.parent.parent.parent / "sample_submission" / "sample_submission"
     if possible_cg.exists() and str(possible_cg) not in sys.path:
         sys.path.insert(0, str(possible_cg))
-    from cg.api import State, PlayerState, Pokemon, CardType
+    from cg.api import State, PlayerState, Pokemon
 
 from .config import EVAL_WEIGHTS
 from .carddb import get_card_db, energy_cost_met, compute_damage
@@ -134,21 +134,11 @@ def _score_board(me: PlayerState) -> float:
 
 
 def _score_hand(me: PlayerState) -> float:
-    score = 0.0
-    db = get_card_db()
-
+    # handCount is always visible; me.hand is None on the opponent's-POV leaves a
+    # rollout reaches after ending the turn. Scoring only handCount keeps the leaf
+    # value independent of whose turn it is, so ending a turn isn't penalized.
     hand_size = me.handCount if me.hand is None else len(me.hand)
-    score += hand_size * EVAL_WEIGHTS["hand_size"]
-
-    if me.hand is not None:
-        has_supporter = any(
-            db.card_by_id.get(c.id) and db.card_by_id[c.id].cardType == CardType.SUPPORTER
-            for c in me.hand
-        )
-        if has_supporter:
-            score += EVAL_WEIGHTS["supporter_in_hand"]
-
-    return score
+    return hand_size * EVAL_WEIGHTS["hand_size"]
 
 
 def _score_status(me: PlayerState) -> float:
