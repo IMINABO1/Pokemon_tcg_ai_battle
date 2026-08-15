@@ -1,6 +1,17 @@
 # Deck Candidates & Performance Notes
 
-## Candidate v2 (LIVE): Sample Water Deck (Kyogre / Mega Abomasnow ex)
+## Candidate v3 (LIVE): Sample Water + 4 Kyogre
+- **Change from v2**: +2 Kyogre (2→4), -1 Cyrano (2→1), -1 Mega Signal (4→3).
+- **Why**: The card pool contains anti-ex walls (Sylveon #330 Safeguard,
+  Crustle #345 Mysterious Rock Inn, Neutralization Zone #1247) that fully
+  blank Mega Abomasnow ex. Kyogre is the non-ex answer (Swirling Waves 130
+  OHKOs Sylveon), dodges opposing Maximum Belt (+50 is vs ex only), and
+  concedes 1 prize instead of 3 when KO'd. Hammer-lanche's self-mill also
+  feeds Riptide's water-in-discard scaling.
+- **Results**: 16/16 vs random, 16/16 vs sample-greedy mirror, 16/16 vs a
+  Sylveon/Crustle wall deck (test_wall.csv) piloted by greedy.
+
+## Candidate v2: Sample Water Deck (Kyogre / Mega Abomasnow ex)
 - **Why**: Under the PIMC searcher this list beat random 29/32 and the greedy
   mirror 32/32; the Ceruledge list managed only ~50%/75% on the same harness.
   Its attacks have no hand-discard riders (nothing to whiff), Mega Abomasnow ex

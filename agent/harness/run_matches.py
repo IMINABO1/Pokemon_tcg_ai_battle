@@ -34,11 +34,17 @@ def _worker_run_match(match_args: tuple) -> dict:
     match_id, type0, name0, type1, name1, overage_bank = match_args
 
     def resolve(agent_type):
+        import os
         if agent_type == "pimc":
             return agent_decide, agent_deck()
-        if agent_type == "greedy":
-            return greedy_agent, agent_deck()
-        return random_agent, sample_deck()
+        opp_deck_path = os.environ.get("PTCG_OPP_DECK")
+        if opp_deck_path:
+            from harness.local_match import _read_deck
+            from pathlib import Path
+            deck = _read_deck(Path(opp_deck_path))
+        else:
+            deck = agent_deck() if agent_type == "greedy" else sample_deck()
+        return (greedy_agent if agent_type == "greedy" else random_agent), deck
 
     func0, deck0 = resolve(type0)
     func1, deck1 = resolve(type1)
