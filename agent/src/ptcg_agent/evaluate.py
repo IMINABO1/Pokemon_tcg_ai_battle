@@ -13,6 +13,18 @@ except ImportError:
 from .config import EVAL_WEIGHTS
 from .carddb import get_card_db, energy_cost_met, compute_damage
 
+# Deck-specific constants for the Ceruledge list (see decks/deck_notes.md).
+FIRE_ENERGY_ID = 2
+CERULEDGE_ID = 797
+INFERNAL_HAND_COST = 4
+
+
+def _fire_in_hand(me: PlayerState):
+    """Basic Fire Energy count in hand, or None when the hand is hidden."""
+    if me.hand is None:
+        return None
+    return sum(1 for c in me.hand if c is not None and c.id == FIRE_ENERGY_ID)
+
 
 def _score_prizes(me: PlayerState, opp: PlayerState) -> float:
     # Standard PTCG has 6 prize cards initially.
@@ -63,8 +75,13 @@ def _score_lethal_threat(me: PlayerState, opp: PlayerState) -> float:
     if not my_card or not opp_card:
         return score
 
-    # Check if my active can KO opponent's active right now
-    for atk_id in my_card.attacks:
+    # Check if my active can KO opponent's active right now.
+    # Infernal Slash whiffs entirely without 4 Fire in hand.
+    fire = _fire_in_hand(me)
+    infernal_dead = (
+        my_active.id == CERULEDGE_ID and fire is not None and fire < INFERNAL_HAND_COST
+    )
+    for atk_id in ([] if infernal_dead else my_card.attacks):
         attack = db.attack_by_id.get(atk_id)
         if attack and energy_cost_met(attack, my_active.energies):
             tools = [db.card_by_id[t.id] for t in my_active.tools if t.id in db.card_by_id]
@@ -98,10 +115,15 @@ def _score_energy_tempo(me: PlayerState) -> float:
         pokemons.append(me.active[0])
     pokemons.extend(me.bench)
 
+    fire = _fire_in_hand(me)
     for p in pokemons:
-        total_attached += len(p.energies)
+        # Cap credit at 2 energies per Pokemon; uncapped credit rewards
+        # dumping hand-held attack resources onto the board.
+        total_attached += min(len(p.energies), 2)
         card = db.card_by_id.get(p.id)
         if card:
+            if p.id == CERULEDGE_ID and fire is not None and fire < INFERNAL_HAND_COST:
+                continue
             for atk_id in card.attacks:
                 attack = db.attack_by_id.get(atk_id)
                 if attack and energy_cost_met(attack, p.energies):
@@ -150,6 +172,21 @@ def _score_hand(me: PlayerState) -> float:
     return score
 
 
+def _score_attack_resources(me: PlayerState) -> float:
+    """Held Basic Fire Energy is this deck's real attack resource: Infernal
+    Slash converts 4 of them into 220 damage. Only scored when the hand is
+    visible (our own perspective)."""
+    fire = _fire_in_hand(me)
+    if fire is None:
+        return 0.0
+    score = min(fire, INFERNAL_HAND_COST + 1) * EVAL_WEIGHTS["fire_in_hand"]
+    if fire >= INFERNAL_HAND_COST:
+        active = me.active[0] if me.active and me.active[0] else None
+        if active and active.id == CERULEDGE_ID and len(active.energies) >= 1:
+            score += EVAL_WEIGHTS["infernal_ready"]
+    return score
+
+
 def _score_status(me: PlayerState) -> float:
     score = 0.0
     if me.poisoned:
@@ -189,6 +226,7 @@ def evaluate_state(state: State, your_index: int) -> float:
         + _score_energy_tempo(me)
         + _score_board(me)
         + _score_hand(me)
+        + _score_attack_resources(me)
         + _score_status(me)
     )
 

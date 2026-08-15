@@ -1,6 +1,7 @@
 """Determinization sampling and belief state tracking for PIMC search."""
 import random
 import sys
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -14,72 +15,65 @@ except ImportError:
 from .carddb import get_card_db
 
 
+def _pokemon_card_ids(p) -> list[int]:
+    ids = [p.id]
+    for c in p.energyCards or []:
+        ids.append(c.id)
+    for c in p.tools or []:
+        ids.append(c.id)
+    for c in p.preEvolution or []:
+        ids.append(c.id)
+    return ids
+
+
+def player_visible_ids(player) -> list[int]:
+    """All card ids visibly owned by a player: board, discard, face-up prizes."""
+    ids: list[int] = []
+    if player.active and player.active[0]:
+        ids.extend(_pokemon_card_ids(player.active[0]))
+    for p in player.bench or []:
+        if p:
+            ids.extend(_pokemon_card_ids(p))
+    for c in player.discard or []:
+        ids.append(c.id)
+    for c in player.prize or []:
+        if c is not None:
+            ids.append(c.id)
+    return ids
+
+
 class StateTracker:
     """Exact set-subtraction bookkeeping for own deck and prizes."""
 
     def __init__(self, full_deck_ids: list[int]):
         self.full_deck_ids = list(full_deck_ids)
+        counts = Counter(full_deck_ids)
+        self._pad_id = counts.most_common(1)[0][0] if counts else 3
 
     def get_own_hidden_cards(self, obs: Observation) -> tuple[list[int], list[int]]:
         """Calculate own remaining unrevealed deck and prize cards via set subtraction.
-        
+
         Returns:
             (your_deck_ids, your_prize_ids)
         """
-        db = get_card_db()
         if not obs.current:
             return list(self.full_deck_ids), []
 
         your_idx = obs.current.yourIndex
         me = obs.current.players[your_idx]
 
-        # Account for all visible cards owned by me
-        visible_ids: list[int] = []
-
-        # Hand
+        visible_ids: list[int] = list(player_visible_ids(me))
         if me.hand:
             for c in me.hand:
                 visible_ids.append(c.id)
 
-        # Active
-        if me.active and me.active[0]:
-            p = me.active[0]
-            visible_ids.append(p.id)
-            for c in p.energyCards:
-                visible_ids.append(c.id)
-            for c in p.tools:
-                visible_ids.append(c.id)
-            for c in p.preEvolution:
-                visible_ids.append(c.id)
+        known_prize_ids: list[int] = [c.id for c in me.prize if c is not None]
 
-        # Bench
-        for p in me.bench:
-            visible_ids.append(p.id)
-            for c in p.energyCards:
-                visible_ids.append(c.id)
-            for c in p.tools:
-                visible_ids.append(c.id)
-            for c in p.preEvolution:
-                visible_ids.append(c.id)
-
-        # Discard
-        for c in me.discard:
-            visible_ids.append(c.id)
-
-        # Known face-up Prize cards
-        known_prize_ids: list[int] = []
-        for c in me.prize:
-            if c is not None:
-                known_prize_ids.append(c.id)
-                visible_ids.append(c.id)
-
-        # Remaining pool = full_deck_ids - visible_ids
         remaining_pool = list(self.full_deck_ids)
         for vid in visible_ids:
             if vid in remaining_pool:
                 remaining_pool.remove(vid)
 
-        # Split remaining pool into deck and hidden prize cards
         deck_count = me.deckCount
         prize_count = len(me.prize) - len(known_prize_ids)
 
@@ -87,11 +81,11 @@ class StateTracker:
         your_deck = remaining_pool[:deck_count]
         your_prize = known_prize_ids + remaining_pool[deck_count : deck_count + prize_count]
 
-        # Fill with fallback basic energy if missing due to edge cases
+        # Pad with our deck's most common card if bookkeeping missed anything.
         while len(your_deck) < me.deckCount:
-            your_deck.append(2)  # Basic Fire Energy
+            your_deck.append(self._pad_id)
         while len(your_prize) < len(me.prize):
-            your_prize.append(2)
+            your_prize.append(self._pad_id)
 
         return your_deck, your_prize
 
@@ -100,7 +94,13 @@ class OpponentBelief:
     """Belief state tracker for opponent cards and archetype sampling."""
 
     def __init__(self):
-        self.observed_opponent_ids: list[int] = []
+        # serial -> cardId; a physical card is re-logged on every move, so
+        # dedup by serial or the belief pool inflates without bound.
+        self.observed_by_serial: dict[int, int] = {}
+
+    @property
+    def observed_opponent_ids(self) -> list[int]:
+        return list(self.observed_by_serial.values())
 
     def update_from_logs(self, obs: Observation):
         if not obs.current or not obs.logs:
@@ -110,74 +110,82 @@ class OpponentBelief:
         db = get_card_db()
 
         for log in obs.logs:
-            if getattr(log, "playerIndex", None) == opp_idx:
-                cid = getattr(log, "cardId", None)
-                if cid and cid > 0 and cid in db.card_by_id:
-                    self.observed_opponent_ids.append(cid)
+            if getattr(log, "playerIndex", None) != opp_idx:
+                continue
+            cid = getattr(log, "cardId", None)
+            serial = getattr(log, "serial", None)
+            if cid and cid > 0 and serial is not None and cid in db.card_by_id:
+                self.observed_by_serial[serial] = cid
 
     def sample_opponent(
-        self, obs: Observation
+        self, obs: Observation, archetype_prior: list[int] | None = None
     ) -> tuple[list[int], list[int], list[int], list[int]]:
         """Sample plausible opponent (deck, prize, hand, active).
-        
-        Returns:
-            (opponent_deck, opponent_prize, opponent_hand, opponent_active)
+
+        The hidden-card pool is the archetype prior (default: mirror of our own
+        deck, the dominant meta assumption) minus the opponent's visible cards,
+        so sampled worlds respect copy counts.
         """
         db = get_card_db()
         opp_idx = 1 - obs.current.yourIndex
         opp = obs.current.players[opp_idx]
 
         deck_count = opp.deckCount
-        prize_count = len(opp.prize)
+        prize_count = sum(1 for c in opp.prize if c is None)
+        known_prize_ids = [c.id for c in opp.prize if c is not None]
         hand_count = opp.handCount
 
-        # Active check (face-down active requires prediction)
         opponent_active: list[int] = []
-        if opp.active and len(opp.active) > 0 and opp.active[0] is None:
-            # Face-down active -> sample a basic Pokemon ID
-            basic_pokes = list(db.basic_pokemon_ids)
-            opponent_active = [random.choice(basic_pokes) if basic_pokes else 319]
 
-        # Build candidate pool for opponent deck based on observed cards or meta defaults
-        candidate_pool: list[int] = list(self.observed_opponent_ids)
+        prior = list(archetype_prior) if archetype_prior else []
+        if not prior:
+            prior = [3] * 35 + [721] * 2 + [722] * 4 + [723] * 4 + [1145] * 4 \
+                + [1158] + [1205] * 2 + [1227] * 4 + [1235] * 4
 
-        # Fill candidate pool to at least 60 cards with standard competitive cards
-        default_filler = [
-            319, 319, 319, 319,  # Charcadet
-            797, 797, 797, 797,  # Ceruledge
-            1227, 1227, 1227, 1227,  # Lillie's Determination
-            1213, 1213, 1213, 1213,  # Judge
-            1182, 1182, 1182, 1182,  # Boss's Orders
-            1086, 1086, 1086, 1086,  # Buddy-Buddy Poffin
-            2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2  # Basic Energy
+        pool = Counter(prior)
+        for vid in player_visible_ids(opp):
+            if pool[vid] > 0:
+                pool[vid] -= 1
+
+        prior_basics = [
+            cid for cid in set(prior)
+            if cid in db.card_by_id
+            and db.card_by_id[cid].cardType == CardType.POKEMON
+            and db.card_by_id[cid].basic
         ]
-        candidate_pool.extend(default_filler)
+
+        if opp.active and len(opp.active) > 0 and opp.active[0] is None:
+            # Face-down active must be a Basic Pokemon.
+            candidates = [c for c in prior_basics if pool[c] > 0] or prior_basics or [722]
+            chosen = random.choice(candidates)
+            opponent_active = [chosen]
+            if pool[chosen] > 0:
+                pool[chosen] -= 1
+
+        candidate_pool = [cid for cid, cnt in pool.items() for _ in range(cnt) if cnt > 0]
+
+        counts = Counter(prior)
+        pad_id = counts.most_common(1)[0][0] if counts else 3
+        need = hand_count + prize_count + deck_count
+        while len(candidate_pool) < need:
+            candidate_pool.append(pad_id)
+
         random.shuffle(candidate_pool)
 
-        # Assign to hand, prize, deck
         opp_hand = candidate_pool[:hand_count]
         candidate_pool = candidate_pool[hand_count:]
 
-        opp_prize = candidate_pool[:prize_count]
+        opp_prize = known_prize_ids + candidate_pool[:prize_count]
         candidate_pool = candidate_pool[prize_count:]
 
         opp_deck = candidate_pool[:deck_count]
 
-        # Ensure deck has at least 1 Basic Pokemon if setup
         has_basic = any(
             cid in db.card_by_id and db.card_by_id[cid].cardType == CardType.POKEMON and db.card_by_id[cid].basic
             for cid in opp_deck
         )
         if not has_basic and opp_deck:
-            opp_deck[0] = 319  # Charcadet basic
-
-        # Fill size gaps if needed
-        while len(opp_hand) < hand_count:
-            opp_hand.append(2)
-        while len(opp_prize) < prize_count:
-            opp_prize.append(2)
-        while len(opp_deck) < deck_count:
-            opp_deck.append(2)
+            opp_deck[0] = prior_basics[0] if prior_basics else 722
 
         return opp_deck, opp_prize, opp_hand, opponent_active
 
@@ -189,7 +197,9 @@ def sample_determinization(
 ) -> dict[str, list[int]]:
     """Sample a complete, legal determinization dict for search_begin."""
     your_deck, your_prize = state_tracker.get_own_hidden_cards(obs)
-    opp_deck, opp_prize, opp_hand, opp_active = belief.sample_opponent(obs)
+    opp_deck, opp_prize, opp_hand, opp_active = belief.sample_opponent(
+        obs, archetype_prior=state_tracker.full_deck_ids
+    )
 
     return {
         "your_deck": your_deck,

@@ -17,7 +17,10 @@ except ImportError:
         SelectType, OptionType, State
     )
 
-from .config import NUM_DETERMINIZATIONS, MAX_SEARCH_DEPTH, MAX_ACTION_CANDIDATES
+from .config import (
+    NUM_DETERMINIZATIONS, MAX_ACTION_CANDIDATES,
+    ROLLOUT_TURN_HORIZON, MAX_ROLLOUT_DECISIONS,
+)
 from .budget import BudgetTracker
 from .evaluate import evaluate_state
 from .determinize import StateTracker, OpponentBelief, sample_determinization
@@ -62,24 +65,26 @@ def _option_card_id(opt, obs: Observation) -> int:
     return 0
 
 
+def _ranked_option_indices(obs: Observation, n_options: int) -> list[int]:
+    """All option indices ordered by descending heuristic card priority
+    (stable on ties; unresolvable cards rank last in original order)."""
+    scored: list[tuple[int, int]] = []
+    for i in range(n_options):
+        cid = _option_card_id(obs.select.option[i], obs)
+        if cid and cid in carddb.CARD_BY_ID:
+            scored.append((_card_priority(carddb.CARD_BY_ID[cid]), i))
+        else:
+            scored.append((0, i))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [i for _, i in scored]
+
+
 def _shortlist_single_options(obs: Observation, n_options: int, k: int) -> list[int]:
     """Pick k option indices for a 1-of-n select, ranked heuristically when the
     option cards are resolvable, rather than blindly taking the first k."""
     if n_options <= k:
         return list(range(n_options))
-    scored: list[tuple[int, int]] = []
-    resolvable = False
-    for i in range(n_options):
-        cid = _option_card_id(obs.select.option[i], obs)
-        if cid and cid in carddb.CARD_BY_ID:
-            resolvable = True
-            scored.append((_card_priority(carddb.CARD_BY_ID[cid]), i))
-        else:
-            scored.append((0, i))
-    if not resolvable:
-        return list(range(k))
-    scored.sort(key=lambda t: (-t[0], t[1]))
-    return sorted(idx for _, idx in scored[:k])
+    return sorted(_ranked_option_indices(obs, n_options)[:k])
 
 
 def enumerate_candidate_actions(obs: Observation) -> list[list[int]]:
@@ -104,65 +109,127 @@ def enumerate_candidate_actions(obs: Observation) -> list[list[int]]:
         shortlist = _shortlist_single_options(obs, n_options, MAX_ACTION_CANDIDATES - 1)
         return [[]] + [[i] for i in shortlist]
 
-    # Select exactly maxCount options (e.g. setup active/bench or multi-card select)
-    if min_c == max_c:
-        if n_options <= max_c:
+    # Multi-card selects (discard costs, deck searches, bench setup): offer the
+    # heuristic top-k, the first-k, and a couple of shifted windows so search
+    # actually has alternatives to compare instead of a single forced pick.
+    def _k_subsets(k: int) -> list[list[int]]:
+        if n_options <= k:
             return [list(range(n_options))]
-        return [list(range(max_c))]
+        ranked = _ranked_option_indices(obs, n_options)
+        subsets = [sorted(ranked[:k]), list(range(k)), sorted(ranked[-k:]),
+                   list(range(n_options - k, n_options))]
+        seen, out = set(), []
+        for s in subsets:
+            t = tuple(s)
+            if t not in seen:
+                seen.add(t)
+                out.append(s)
+        return out
 
-    # Default fallback: pick maxCount elements
+    if min_c == max_c:
+        return _k_subsets(max_c)
+
     limit_c = min(max_c, n_options)
     if limit_c == 0:
         return [[]]
-    return [list(range(limit_c))]
+    candidates = []
+    if min_c == 0:
+        candidates.append([])
+    lo = max(min_c, 1)
+    for k in {lo, limit_c}:
+        candidates.extend(_k_subsets(k))
+    seen, out = set(), []
+    for s in candidates:
+        t = tuple(s)
+        if t not in seen:
+            seen.add(t)
+            out.append(s)
+    return out[:MAX_ACTION_CANDIDATES]
 
 
-def _greedy_next(search_state: SearchState, our_index: int,
-                 evaluator: Callable[[State, int], float]) -> SearchState | None:
-    """Advance one decision by the option that best serves the acting player:
-    maximise our evaluation on our decisions, minimise it on the opponent's."""
-    obs = search_state.observation
-    if not obs or not obs.select or (obs.current and obs.current.result != -1):
-        return None
+# Aggressive static rollout policy: applies to BOTH players inside rollouts.
+# Development actions outrank ATTACK because attacking ends the turn — the
+# rollout should play out a full turn and then attack, like a real player.
+_ROLLOUT_PRIORITY = {
+    OptionType.EVOLVE: 80,
+    OptionType.ATTACH: 75,
+    OptionType.ABILITY: 70,
+    OptionType.PLAY: 65,
+    OptionType.ATTACK: 60,
+    OptionType.YES: 40,
+    OptionType.NUMBER: 30,
+    OptionType.CARD: 20,
+    OptionType.TOOL_CARD: 20,
+    OptionType.ENERGY_CARD: 20,
+    OptionType.ENERGY: 20,
+    OptionType.SKILL: 20,
+    OptionType.SPECIAL_CONDITION: 20,
+    OptionType.NO: 10,
+    OptionType.END: 5,
+    OptionType.RETREAT: 0,
+}
 
-    candidates = enumerate_candidate_actions(obs)
-    if not candidates:
-        return None
 
-    acting_index = obs.current.yourIndex if obs.current else our_index
-    maximize = acting_index == our_index
+def _rollout_policy_action(obs: Observation) -> list[int]:
+    """Single fast action for rollout continuation — no branching, no eval."""
+    select = obs.select
+    options = select.option
+    n_options = len(options)
+    min_c = select.minCount
+    max_c = min(select.maxCount, n_options)
 
-    best_state = None
-    best_score = None
-    for cand in candidates:
-        try:
-            nxt = search_step(search_state.searchId, cand)
-        except Exception:
-            continue
-        leaf = nxt.observation
-        score = evaluator(leaf.current, our_index) if leaf and leaf.current else 0.0
-        if best_score is None or (score > best_score if maximize else score < best_score):
-            best_score, best_state = score, nxt
-    return best_state
+    if n_options == 0 or max_c == 0:
+        return []
+
+    def prio(opt) -> float:
+        p = _ROLLOUT_PRIORITY.get(opt.type, 20)
+        if opt.type == OptionType.NUMBER and opt.number is not None:
+            p += min(opt.number, 9) * 0.1
+        return p
+
+    if min_c <= 1:
+        best_i = max(range(n_options), key=lambda i: prio(options[i]))
+        if min_c == 0 and prio(options[best_i]) < 20:
+            return []
+        return [best_i]
+
+    count = min(min_c, max_c)
+    ranked = sorted(range(n_options), key=lambda i: -prio(options[i]))
+    return sorted(ranked[:count])
 
 
 def _rollout(
     start_search_state: SearchState,
     initial_action: list[int],
-    depth: int,
     your_index: int,
-    evaluator: Callable[[State, int], float]
+    evaluator: Callable[[State, int], float],
+    budget: BudgetTracker | None = None,
+    root_turn: int = 0,
 ) -> float:
-    """Apply initial_action, then greedy 1-ply continuation to `depth`, score the leaf."""
+    """Apply initial_action, then continue with the static rollout policy until
+    the start of our turn after next (root_turn + ROLLOUT_TURN_HORIZON), so every
+    candidate line is evaluated at the same game phase. Fixed-decision-depth
+    rollouts made turn-ending actions (attacks) look worse than stalling,
+    because only attack lines ever showed the opponent's reply."""
     current_search_state = search_step(start_search_state.searchId, initial_action)
 
-    current_depth = 1
-    while current_depth < depth:
-        nxt = _greedy_next(current_search_state, your_index, evaluator)
-        if nxt is None:
+    steps = 0
+    while steps < MAX_ROLLOUT_DECISIONS:
+        obs = current_search_state.observation
+        if not obs or not obs.select or not obs.current:
             break
-        current_search_state = nxt
-        current_depth += 1
+        if obs.current.result != -1:
+            break
+        if obs.current.turn >= root_turn + ROLLOUT_TURN_HORIZON:
+            break
+        if budget is not None and budget.is_expired():
+            break
+        action = _rollout_policy_action(obs)
+        try:
+            current_search_state = search_step(current_search_state.searchId, action)
+        except Exception:
+            break
+        steps += 1
 
     leaf_obs = current_search_state.observation
     if leaf_obs and leaf_obs.current:
@@ -171,13 +238,24 @@ def _rollout(
 
 
 def _legal_determinization(obs, state_tracker, belief, retries: int):
-    """Sample a determinization whose opponent deck passes the legality gate, with
-    bounded retries; return the last sample regardless so search never stalls."""
-    from .legality import is_legal
+    """Sample a determinization whose opponent hidden zones pass the copy-count
+    gate, with bounded retries; return the last sample regardless so search
+    never stalls. The check must include the opponent's VISIBLE cards and must
+    not require 60 cards — a full-deck check can never pass once the opponent
+    has cards in play."""
+    from .legality import partial_ok
+    from .determinize import player_visible_ids
+
+    visible = []
+    if obs.current:
+        visible = player_visible_ids(obs.current.players[1 - obs.current.yourIndex])
+
     det = None
     for _ in range(max(1, retries)):
         det = sample_determinization(obs, state_tracker, belief)
-        if is_legal(det["opponent_deck"] + det["opponent_prize"] + det["opponent_hand"]):
+        hidden = (det["opponent_deck"] + det["opponent_prize"]
+                  + det["opponent_hand"] + det["opponent_active"])
+        if partial_ok(hidden + visible):
             return det
     return det
 
@@ -204,6 +282,7 @@ def search_pimc_action(
         return candidates[0]
 
     your_index = obs.current.yourIndex if obs.current else 0
+    root_turn = obs.current.turn if obs.current else 0
     action_scores: dict[tuple[int, ...], float] = {tuple(c): 0.0 for c in candidates}
     action_counts: dict[tuple[int, ...], int] = {tuple(c): 0 for c in candidates}
 
@@ -236,9 +315,10 @@ def search_pimc_action(
                     score = _rollout(
                         root_state,
                         cand,
-                        MAX_SEARCH_DEPTH,
                         your_index,
-                        evaluator
+                        evaluator,
+                        budget,
+                        root_turn
                     )
                     action_scores[cand_tuple] += score
                     action_counts[cand_tuple] += 1

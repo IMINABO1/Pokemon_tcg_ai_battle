@@ -25,10 +25,9 @@ def build_submission():
         shutil.rmtree(staging_dir)
     staging_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Check deck legality - HARD FAIL if illegal
-    deck_csv_path = agent_dir / "decks" / "candidate_v1.csv"
-    if not deck_csv_path.exists():
-        deck_csv_path = src_dir / "ptcg_agent" / "deck.csv"
+    # 2. Check deck legality - HARD FAIL if illegal.
+    # src/ptcg_agent/deck.csv is the canonical live deck (what the harness runs).
+    deck_csv_path = src_dir / "ptcg_agent" / "deck.csv"
 
     with open(deck_csv_path, "r", encoding="utf-8") as f:
         deck_ids = [int(line.strip()) for line in f.read().split("\n") if line.strip()]

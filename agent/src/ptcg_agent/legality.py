@@ -32,6 +32,26 @@ def is_legal(deck: list[int]) -> bool:
     return not deck_violations(deck)
 
 
+def partial_ok(card_ids: list[int]) -> bool:
+    """Copy-count legality for a PARTIAL card set (e.g. a determinization's
+    hidden zones plus the opponent's visible cards): max 4 per name excluding
+    basic energy, at most 1 ACE SPEC. No 60-card or basic-Pokemon requirement —
+    a partial set can never satisfy those."""
+    name_counts: Counter[str] = Counter()
+    ace_specs = 0
+    for cid in card_ids:
+        if cid not in carddb.CARD_BY_ID:
+            return False
+        if cid in carddb.ACE_SPEC_IDS:
+            ace_specs += 1
+        if carddb.is_basic_energy(cid):
+            continue
+        name_counts[carddb.CARD_BY_ID[cid].name] += 1
+    if ace_specs > 1:
+        return False
+    return all(n <= 4 for n in name_counts.values())
+
+
 def deck_violations(deck: list[int]) -> list[str]:
     """Return a list of human-readable rule violations (empty == legal)."""
     reasons: list[str] = []

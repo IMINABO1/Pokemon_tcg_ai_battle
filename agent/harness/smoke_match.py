@@ -1,31 +1,18 @@
-"""Smoke test: run one local match, heuristic agent vs a random agent.
+"""Smoke test: run one local match, PIMC agent vs the greedy baseline.
 
-Usage:  python harness/smoke_match.py
-Run from the `agent/` dir (needs `cg` symlink + `src/` on the path).
+Usage:  python agent/harness/smoke_match.py
 """
 from __future__ import annotations
 
 import os
-import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from cg.api import to_observation_class  # noqa: E402
 from ptcg_agent.policy import agent_decide, read_deck_csv  # noqa: E402
 from ptcg_agent import legality  # noqa: E402
-from harness.local_match import run_one_match  # noqa: E402
-
-
-def random_agent(obs_dict: dict) -> list[int]:
-    obs = to_observation_class(obs_dict)
-    if obs.select is None:
-        return read_deck_csv()
-    s = obs.select
-    k = s.minCount if s.minCount > 0 else min(s.maxCount, 1)
-    k = min(k, len(s.option))
-    return random.sample(range(len(s.option)), k) if k > 0 else []
+from harness.local_match import run_one_match, greedy_agent  # noqa: E402
 
 
 def main() -> int:
@@ -35,14 +22,16 @@ def main() -> int:
     if v:
         print("  violations:", v)
 
-    res = run_one_match(deck, agent_decide, deck, random_agent)
+    res = run_one_match(deck, agent_decide, "PIMC_Agent", deck, greedy_agent, "Greedy_Agent")
     print("\n=== MatchResult ===")
-    print(f"winner            : {res.winner}")
-    print(f"turns / actions   : {res.turns} / {res.actions}")
-    print(f"wall seconds      : {res.wall_seconds:.2f}")
-    print(f"max decision (s)  : {res.max_decision_seconds:.4f}")
-    if res.error_repr:
-        print(f"ERROR (player {res.error_player}):\n{res.error_repr}")
+    print(f"winner            : {res.winner} ({res.winner_name})")
+    print(f"actions           : {res.total_actions}")
+    print(f"wall seconds      : {res.duration_seconds:.2f}")
+    print(f"pimc decisions    : {res.stats0.decisions}")
+    print(f"pimc max/mean (s) : {res.stats0.max_decision_seconds:.4f} / {res.stats0.mean_decision_seconds:.4f}")
+    print(f"pimc total think  : {res.stats0.total_seconds:.1f}s of 600s bank")
+    if res.error_message:
+        print(f"ERROR: {res.error_message}")
         return 1
     print("no uncaught agent exceptions")
     return 0

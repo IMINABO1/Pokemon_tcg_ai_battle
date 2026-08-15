@@ -1,9 +1,24 @@
 """Configuration constants and evaluation weights for PTCG Agent."""
+import os
 
-PER_DECISION_BUDGET_SECONDS: float = 2.0
-NUM_DETERMINIZATIONS: int = 8
-MAX_SEARCH_DEPTH: int = 4
+PER_DECISION_BUDGET_SECONDS: float = float(os.environ.get("PTCG_BUDGET", "1.2"))
+NUM_DETERMINIZATIONS: int = int(os.environ.get("PTCG_DETS", "16"))
+# Rollouts run to a fixed TURN horizon (start of our next turn), not a fixed
+# decision depth: comparing "attacked, opponent replied" leaves against
+# "developed, turn never ended" leaves at unequal phases made passive lines
+# look strictly better and the agent stopped attacking.
+ROLLOUT_TURN_HORIZON: int = 2
+MAX_ROLLOUT_DECISIONS: int = 30
 MAX_ACTION_CANDIDATES: int = 10
+
+# Kaggle gives each agent a per-game overage bank ("remainingOverageTime", ~600s
+# with actTimeout=0); the agent is disqualified if it hits 0. The adaptive budget
+# spreads the remaining bank over the expected remaining decisions.
+MIN_DECISION_BUDGET_SECONDS: float = 0.3
+MAX_DECISION_BUDGET_SECONDS: float = 1.2
+LOW_OVERAGE_CUTOFF_SECONDS: float = 40.0
+EXPECTED_DECISIONS_PER_GAME: int = 200
+MIN_EXPECTED_REMAINING_DECISIONS: int = 40
 # Retries when a sampled determinization fails the legality gate before falling back.
 DETERMINIZATION_LEGALITY_RETRIES: int = 4
 
@@ -26,6 +41,10 @@ EVAL_WEIGHTS = {
     # Hand quality: hand size, draw/search supporters available
     "hand_size": 2.0,
     "supporter_in_hand": 8.0,
+    # Deck-specific engine: Infernal Slash (Ceruledge #797) does NOTHING unless
+    # 4 Basic Fire Energy are discarded from hand, so held Fire IS our damage.
+    "fire_in_hand": 20.0,
+    "infernal_ready": 60.0,
     # Status condition penalties (own active)
     "status_poisoned": -5.0,
     "status_burned": -5.0,
