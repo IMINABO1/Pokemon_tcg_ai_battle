@@ -1,7 +1,38 @@
-# Only ignore OS junk and Python bytecode.
-# Everything else (PDFs, CSVs, binaries, dist/, submission_logs/, replays) is
-# tracked on purpose so teammates / another laptop see the full picture.
+# OS junk / editors
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+pokevenv/
+venv/
+.venv/
+env/
+
+# Credentials — never commit API tokens
+kaggle.json
+.kaggle/
+*.pem
+.env
+
+# FIELD-Zero pipeline outputs (large, regenerable)
+data_lake/
+checkpoints/
+*.parquet
+
+# Scratch
+*.tmp
+*.log
+
+# NOTE: dist/, harness/results/, decks/, submission_logs/, card CSVs, and
+# engine binaries are tracked on purpose so the full picture is visible.
