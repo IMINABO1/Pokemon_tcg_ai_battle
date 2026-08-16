@@ -36,8 +36,11 @@ EVAL_WEIGHTS = {
     "energy_attached": 10.0,
     "attack_ready": 25.0,
     # Board development: bench fill, evolution status
-    "bench_count": 5.0,
+    "bench_count": 8.0,
     "evolution_advantage": 15.0,
+    # An empty bench after setup is one KO from losing outright — insurance
+    # the turn-horizon rollout can't always see far enough to price.
+    "benchless_penalty": -40.0,
     # Hand quality: hand size, draw/search supporters available
     "hand_size": 2.0,
     "supporter_in_hand": 8.0,

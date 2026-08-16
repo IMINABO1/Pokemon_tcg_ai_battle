@@ -1,5 +1,20 @@
 # Deck Candidates & Performance Notes
 
+## Candidate v4 (LIVE): +Basics package (Suicune/Glastrier)
+- **Change from v3**: -4 Water Energy (35->31), -1 Mega Signal (2 left),
+  +3 Suicune #803, +2 Glastrier #867. Basics: 8 -> 13.
+- **Why**: Ranked replays of v0.2.1 (submission 55538879, ~478 Elo, 5-8)
+  showed repeated benchless insta-losses: with 8 basics the agent often
+  never benches, so one KO ends the game. Search scored these positions
+  correctly (-1e6 in half of sampled worlds) - the deck was creating dead
+  positions. Buddy-Buddy Poffin can't help (our basics all exceed 70 HP),
+  so the fix is more self-sufficient basics: Suicune (30+90 with 4 {W} in
+  play), Glastrier (1-energy 20+20 snipe, 130 for {W}{W}{W}).
+- **Paired change**: EVAL benchless_penalty -40 + bench_count 8 so the
+  evaluator prices bench insurance beyond the rollout horizon.
+- **Results**: 16/16 vs greedy piloting v3 (meta proxy), 16/16 vs wall,
+  27/32 vs random; max in-process decision 1.2s.
+
 ## Candidate v3 (LIVE): Sample Water + 4 Kyogre
 - **Change from v2**: +2 Kyogre (2→4), -1 Cyrano (2→1), -1 Mega Signal (4→3).
 - **Why**: The card pool contains anti-ex walls (Sylveon #330 Safeguard,

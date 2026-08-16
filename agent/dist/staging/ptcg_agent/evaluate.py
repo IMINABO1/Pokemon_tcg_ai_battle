@@ -139,8 +139,10 @@ def _score_energy_tempo(me: PlayerState) -> float:
 
 def _score_board(me: PlayerState) -> float:
     score = 0.0
-    bench_count = len(me.bench)
+    bench_count = sum(1 for b in me.bench if b is not None)
     score += bench_count * EVAL_WEIGHTS["bench_count"]
+    if bench_count == 0:
+        score += EVAL_WEIGHTS["benchless_penalty"]
 
     # Evolution advantage
     evolved_count = 0
