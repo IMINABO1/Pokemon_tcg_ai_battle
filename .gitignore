@@ -13,6 +13,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Claude Code local config
+.claude/
+
 # Virtualenvs
 pokevenv/
 venv/
