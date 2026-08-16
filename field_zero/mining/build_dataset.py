@@ -25,12 +25,19 @@ def load_jsonl(fp: Path):
             yield json.loads(line)
 
 
+# Card ids 1-8 are the basic energies; every deck maxes them, so they say
+# nothing about archetype.
+BASIC_ENERGY_IDS = set(range(1, 9))
+
+
 def archetype_of(deck_ids: list[int] | None, card_names: dict[int, str] | None) -> str:
-    """v0: archetype = most-copied non-energy card name; falls back to
+    """v0: archetype = most-copied non-basic-energy card name; falls back to
     fingerprint prefix. Replace with proper clustering once carddb is wired."""
     if not deck_ids:
         return "unknown"
-    counts = Counter(deck_ids)
+    counts = Counter(cid for cid in deck_ids if cid not in BASIC_ENERGY_IDS)
+    if not counts:
+        return "unknown"
     top_id, _ = counts.most_common(1)[0]
     if card_names and top_id in card_names:
         return card_names[top_id]
