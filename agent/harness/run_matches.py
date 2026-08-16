@@ -69,18 +69,6 @@ def _worker_run_match(match_args: tuple) -> dict:
         "p1_mean_s": round(res.stats1.mean_decision_seconds, 4),
         "p1_total_s": round(res.stats1.total_seconds, 2),
         "error": res.error_message or "",
-        "decisions": decisions,
-        "decision_fallback": fallback,
-        "fallback_rate": round(fallback / decisions, 3) if decisions else 0.0,
-        "search_decisions": counters.get("search_decisions", 0),
-        "search_begin_ok": counters.get("search_begin_ok", 0),
-        "search_begin_fail": counters.get("search_begin_fail", 0),
-        "candidates_total": cand_total,
-        "candidates_scored": cand_scored,
-        "cand_scored_rate": round(cand_scored / cand_total, 3) if cand_total else 0.0,
-        "rollout_fail": counters.get("rollout_fail", 0),
-        "search_degenerate": counters.get("search_degenerate", 0),
-        "search_picked_nonzero": counters.get("search_picked_nonzero", 0),
     }
 
 
