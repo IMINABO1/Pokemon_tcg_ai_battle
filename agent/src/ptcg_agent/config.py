@@ -2,7 +2,7 @@
 import os
 
 PER_DECISION_BUDGET_SECONDS: float = float(os.environ.get("PTCG_BUDGET", "1.2"))
-NUM_DETERMINIZATIONS: int = int(os.environ.get("PTCG_DETS", "16"))
+NUM_DETERMINIZATIONS: int = int(os.environ.get("PTCG_DETS", "32"))
 # Rollouts run to a fixed TURN horizon (start of our next turn), not a fixed
 # decision depth: comparing "attacked, opponent replied" leaves against
 # "developed, turn never ended" leaves at unequal phases made passive lines
@@ -15,7 +15,7 @@ MAX_ACTION_CANDIDATES: int = 10
 # with actTimeout=0); the agent is disqualified if it hits 0. The adaptive budget
 # spreads the remaining bank over the expected remaining decisions.
 MIN_DECISION_BUDGET_SECONDS: float = 0.3
-MAX_DECISION_BUDGET_SECONDS: float = 1.2
+MAX_DECISION_BUDGET_SECONDS: float = 2.5
 LOW_OVERAGE_CUTOFF_SECONDS: float = 40.0
 EXPECTED_DECISIONS_PER_GAME: int = 200
 MIN_EXPECTED_REMAINING_DECISIONS: int = 40
