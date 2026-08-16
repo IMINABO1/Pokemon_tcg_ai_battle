@@ -1,96 +1,89 @@
-# Journal
+# Journal — Pokémon TCG AI Battle Challenge
+
+Merged log of both workstreams (Belex: July groundwork + instrumentation;
+Imi: August overhaul, ladder campaign, cluster handoff).
 
 ## References
-- Simulation Category: https://www.kaggle.com/competitions/pokemon-tcg-ai-battle
-- Strategy Category: https://www.kaggle.com/competitions/pokemon-tcg-ai-battle-challenge-strategy
-- Beginner packaging guide (submission.tar.gz format): https://www.kaggle.com/code/ichigoe/beginner-guide-from-deck-list-to-first-valid-sub
+- Simulation Category: https://www.kaggle.com/competitions/pokemon-tcg-ai-battle (submissions closed 2026-08-16 23:59 UTC; games run until leaderboard converges ~Aug 31)
+- Strategy Category (write-up): https://www.kaggle.com/competitions/pokemon-tcg-ai-battle-challenge-strategy (entry 2026-09-06, final 2026-09-13)
+- Episode datasets index: https://www.kaggle.com/datasets/kaggle/pokemon-tcg-ai-battle-episodes-index (~21.5 GB/day, 4.5–8k episodes/day)
+- Beginner packaging guide: https://www.kaggle.com/code/ichigoe/beginner-guide-from-deck-list-to-first-valid-sub
+- Docker image for cluster training: `docker.io/iminabo/field_zero:latest`
+- Meta reference: `pokemon_tcg_meta_history.txt` (1999–2026 archetype history; its 2026 section matched real ladder decks card-for-card)
 
 ## Project in one line
-PIMC (guess opponent's hidden cards, search each guess in the real C++ engine, average) + heuristic
-evaluator agent for the Pokémon TCG AI Battle Challenge, targeting wins in both the Simulation and
-Strategy categories.
+A determinized-search (PIMC) agent over the competition's real C++ engine for the ladder, plus a mined-replay imitation-learning pipeline (FIELD-Zero) for the strategy write-up and a possible learned evaluator.
 
 ## Decisions (with rationale)
 
-### 2026-07-13 — Heuristic + PIMC search first; RL later (from PLAN v1)
-Chose a hand-built evaluator inside PIMC search over starting with self-play RL. Why: PIMC is the
-proven approach for imperfect-information TCG bots on tight compute, and the plan was drafted
-believing only ~4 weeks remained. Rejected: pure self-play RL first — documented risk of strategy
-cycling/divergence (Lux AI S1, NFSP precedent) and multi-week infra before any ladder signal.
-
-### 2026-07-13 — Single-energy efficient-attacker deck (Ceruledge) over the sample mill deck
-"Attach, attack for near-lethal, repeat" is far easier for a heuristic+shallow-search pilot to play
-correctly than combo/mill sequencing; early on, play quality is the bottleneck, not deck power.
-Rejected: adapting the sample mono-Water mill deck (requires precise sequencing the agent can't
-deliver yet).
+### 2026-07-13 — Heuristic + PIMC search first; RL later (PLAN v1)
+PIMC is the proven approach for imperfect-information TCG bots on tight compute. Rejected: pure self-play RL first — documented risk of strategy cycling/divergence and multi-week infra before any ladder signal.
 
 ### 2026-07-13 — Sequential-only traversal within one search tree
-Engine source shows the RNG lives on `Game` and all nodes of one `search_begin` tree share it
-(`Search.h:238`, `State.h:111`, `Game.h:61`). Any parallelism must be cross-process. Rejected:
-in-process threading of sibling branches (would corrupt the shared RNG stream).
+Engine source shows the RNG lives on `Game` and all nodes of one `search_begin` tree share it (`Search.h:238`, `State.h:111`, `Game.h:61`). Any parallelism must be cross-process. Rejected: in-process threading of sibling branches (would corrupt the shared RNG stream).
 
-### 2026-08-01 — Rewrite PLAN.md as v2 rather than patch it
-Real deadlines are entry 2026-09-06 / final 2026-09-13 — a month later than v1 assumed — and v1
-describes building an architecture that is already built (~1,060 LOC, working harness, passing
-tests, packaged submission, one live Kaggle episode). Rejected: in-place date edits (most of the
-document planned work that's done) and keeping a parallel PLAN_V2.md (two plans invite drift; git
-history preserves v1).
+### 2026-07-13 — Single-energy efficient-attacker deck (Ceruledge) over the sample deck — later reversed
+Chosen because "attach, attack, repeat" seemed easiest for a shallow-search pilot. Reversed 2026-08-15 when Infernal Slash's hand-discard rider proved the deck whiff-prone (see problems log); the searcher turned out to be deck-agnostic because the engine prices attack riders inside rollouts.
 
-### 2026-08-01 — RL value-net track is ON, gated
-School GPU cluster is available and a teammate can own it. The learned-evaluator-inside-real-engine-
-PIMC combination is the "win" bet most teams won't make. Gated (G2, Sep 3): must beat the tuned
-heuristic ≥55% over ≥300 local matches or the heuristic ships. Rejected: search-only for safety
-(goal is to win, and the recovered month funds the attempt) and ungated RL (shipping on faith is the
-documented failure mode).
+### 2026-08-01 — Observability before fixes
+Counters at every exception-swallow site (`stats.py`) before touching the search. They refuted the leading "search never runs" hypothesis in 30 minutes (see problems log) and redirected the effort to decision quality.
+
+### 2026-08-15 — Rollouts run to a fixed *turn* horizon, not fixed decision depth
+Fixed depth compared "attacked → opponent replied" leaves against "stalled → nobody replied" leaves at different game phases, so passive lines always won and the agent stopped attacking. Rejected: deeper fixed depth (same parity bug, slower); full expectimax (sequential-only engine, too slow).
+
+### 2026-08-15 — Static develop-then-attack rollout policy instead of eval-greedy expansion
+Greedy expansion evaluates every candidate at every rollout step (~10× cost). Static priority (EVOLVE > ATTACH > ABILITY > PLAY > ATTACK > … > RETREAT) is ~30× cheaper; attack ranks below development because attacking ends the turn.
+
+### 2026-08-15 — Adaptive per-decision time budget from `remainingOverageTime`
+The real ladder gives `actTimeout=0` plus a per-agent 600 s bank per game — DQ at 0 (answered PLAN v1's "biggest open unknown"). Budget = clamp(bank / expected-remaining-decisions, 0.3 s, 2.5 s), heuristic fallback under 40 s. Rejected: fixed 2.0 s/decision (would DQ ~300 decisions into a long game).
+
+### 2026-08-15/16 — Deck evolution driven by replay evidence
+v1 Ceruledge retired (whiff rider) → sample Kyogre/Mega Abomasnow shell (16/16 vs random and greedy locally) → v3 (+4 Kyogre vs anti-ex walls in the pool) → v4 (13 basics + benchless eval penalty, after ranked replays showed benchless insta-losses) → v5 = the exact ~1280-Elo Grimmsnarl/Munkidori list mined from top-team replays. Rejected: Buddy-Buddy Poffin engine for our shells (our basics all exceed its 70 HP limit).
+
+### 2026-08-16 — Opponent determinization = mirror archetype prior minus visible cards, serial-deduped beliefs
+Mirror-of-our-deck is the dominant-meta assumption and guarantees internally consistent worlds; visible-card subtraction plus per-name copy caps keeps samples legal. Belief dedup by card serial (a physical card is re-logged on every move — the un-deduped list grew without bound, plausibly Belex's observed late-game degradation).
+
+### 2026-08-16 — Ship two final variants and let the ladder arbitrate (final rank = best submission)
+v0.4a = v4 deck; v0.4b = mined Grimmsnarl list. Local suites saturate (both ≥15/16 vs all baselines), so the ladder was the only remaining discriminator. Verdict within hours: archetype, not compute, is the binding variable (identical search: ~510 vs ~760).
+
+### 2026-08-16 — Training on Quest (Northwestern HPC) via Docker → Apptainer, not locally
+No root on shared clusters → no dockerd; Apptainer consumes the same image unprivileged. Environment ships in the image (CUDA 12.4 *runtime* base — nothing compiles CUDA here, saves ~7 GB); code ships via git clone, bind-mounted over the image's baked copy so `git pull` beats rebuild+push.
+
+### 2026-08-16 (~08:30 UTC) — Final submission slot HELD pending ladder evidence (owner decision)
+Owner checked the leaderboard distribution first: 6,846 teams, bell curve, median 612, ceiling 1273 — the hoped-for 1700–2000 region does not exist (800 = top 14%, 900 = top 6%, 1000 = top 2%). v0.4b was climbing 604 → 725 at decision time. Decision: hold, watch v0.4b's plateau, decide near the deadline. A v6 candidate (mined Mega Lucario ex list — the deck that beat us twice) is benchmarked and ready: 14/16 vs Grimmsnarl-greedy, 16/16 mirror, 16/16 wall, worst game 84 s/600. RL/BC by tonight acknowledged as unrealistic (featurizer unwritten, data unmined).
+
+### 2026-08-16 — Post-merge: ladder-validated code wins over instrumentation-era edits
+Merging `origin/imi` grafted the 08-01 evaluator rebalance onto the overhauled agent (non-conflicting hunks apply even with `-X ours`). Restored the validated versions; kept `stats.py` and `test_evaluate.py`, with the hand-visibility invariant test xfail'd as a documented divergence (turn-horizon rollouts evaluate all sibling candidates at the same phase, so the visibility bias is shared).
 
 ## Open questions
-- **Per-move timeout on Kaggle** — undocumented anywhere in the provided source; the single biggest
-  unknown. Answer by: early real submissions with per-decision wall-clock logging (Track A).
-- **Why exactly does every rollout fail?** Prime suspect is re-stepping from a consumed
-  `root_state.searchId` (`search.py:77`). Answer by: Phase 0 step 0 counters, then step 1 fix.
-- **Is Ceruledge actually the right deck?** Zero empirical evidence yet. Answer by: Track B
-  round-robin, ≥200 matches per pairing, once the pilot is trustworthy (post-G0).
+- Spend the held final slot on the benchmarked v6 Lucario agent before 23:59 UTC, or hold it unused? Watch v0.4b's plateau (~750–790 as of ~12:00 UTC).
+- Ratings for weighted imitation: replays carry no mu/sigma — join against Kaggle's episode-metadata tables, or accept `w_skill(None)=0.25`? Answer during bulk mining on Quest.
+- Featurizer design for BC (the deliberate remaining seam in `bc_train.py`): one shared module for training and submission runtime.
+- Whether the Strategy entry needs reproducibility artifacts attached (rules page is login-gated; owner to read the official text).
+- Reconcile the hand-visibility evaluator invariant (xfail'd test) with the shipped visibility-dependent terms — revisit if leaf phases ever diverge.
 
 ## Progress log
 
-### 2026-08-01 — Baseline established: pipeline works, agent does not
-- Full architecture is implemented and end-to-end: agent modules, multiprocess harness, unit tests
-  passing, legal Ceruledge deck, packaged `submission.tar.gz`, one real Kaggle episode (87163505,
-  self-mirror validation match).
-- Local suite result: **1 win / 5 matches vs a random agent**
-  (`agent/harness/results/suite_results.csv`).
-- Code-read diagnosis: matches of 42–125 actions completed in 0.63–2.06 s *total* against a
-  configured 2.0 s/decision × 6 determinizations — the search never actually runs. All exception
-  paths are silently swallowed and the code degrades to "always pick option 0", which is worse than
-  random. Seven further defects ranked in PLAN.md §4 (eval weights that pay −10 to play a supporter,
-  a COUNT handler that returns a count where an index is expected → instant forfeit, degenerate
-  opponent-belief sampling, ATTACK/END truncated from candidate lists).
-- Interpretation: this is a systematic-defect problem, not a strength-tuning problem. Phase 0 of
-  PLAN v2 is the ordered fix list; gate G0 = ≥90% vs Random over ≥100 matches.
+### 2026-07-20 — Week-1 baseline on the ladder
+Heuristic-only agent + placeholder mono-Water deck (sub 54863866) to start the ladder clock and measure timing. Settled at 344.4. Its episode logs later became the key evidence for the real timing model.
 
-### 2026-08-01 — Instrumentation refuted the "search never runs" hypothesis
-Built Phase 0 observability first (`agent/src/ptcg_agent/stats.py`: counters at every swallowed
-exception site, surfaced into `agent/harness/results/suite_results.csv`). Ran a 20-match baseline
-vs Random:
+### 2026-07-30 — PIMC v1 and its bugs
+First search agent (commit `e2e12ab`) fixed six bugs (COUNT returned the count value, not an index; YES/NO by position; etc.), but the recorded suite predated the fix and the fixed agent was never re-benchmarked.
 
-| Metric | Value |
-|---|---|
-| Win rate vs Random | **5/20 = 25%** |
-| Whole-decision fallbacks | 0 |
-| `search_begin` fail | 0 / 3774 |
-| Candidate rollouts scored | 17532 / 17532 (100%) |
-| Rollout exceptions | 0 |
-| Degenerate ties (all cands equal) | 149 / 629 search decisions (23.7%) |
-| Picked non-default action | 150 / 629 (23.8%) |
+### 2026-08-01 — Baseline established: pipeline works, agent does not (Belex)
+Full architecture end-to-end; local suite 1/5 vs random. Code-read suggested the search never runs (swallowed exceptions → "always option 0").
 
-- **The search runs fully and discriminates** — the earlier "silently degrades to option 0"
-  root-cause guess is **wrong** (see [[problems_encountered]] entry). The old ~0.6–2 s timing that
-  looked "too fast to be searching" was just a shallow, cheap rollout; it *is* searching.
-- Strong signal instead: **win/loss tracks game length** — PIMC wins were 15–36 actions, losses
-  148–192. Play degrades over long games.
-- **Direction change for Phase 0:** deprioritize the rollout state-lifecycle rewrite (it fixes a
-  failure that isn't occurring); prioritize (1) evaluator weight rebalance + tie-breaking, (2)
-  rollout depth / opponent-continuation quality, (3) opponent-belief drift over long games. The
-  degenerate-tie rate and fallback rate are now the regression signals to watch per fix.
-- All 23 unit tests still pass; instrumentation is behavior-neutral. (Installed `pytest` into the
-  fresh venv to run them.)
+### 2026-08-01 — Instrumentation refuted the "search never runs" hypothesis (Belex)
+Counters at every swallow site: over 20 matches, 0 fallbacks, 0 `search_begin` failures, 17,532/17,532 rollouts scored. The search runs and discriminates (23.8% non-default picks; 23.7% degenerate ties). True signal: win/loss tracks game length — every win short (15–36 actions), every loss long (148–192). Redirected effort to evaluator quality, rollout depth, and belief drift — the same three defects independently confirmed and fixed on 2026-08-15.
+
+### 2026-08-15 — Overhaul day (commit `a5a8b97`)
+Re-benchmarked: 6/16 vs random, 11/16 vs greedy. Fixed in sequence: adaptive timing from the 600 s bank; rollout parity bug → turn-horizon rollouts (11/16 → 14/16 vs greedy); Infernal Slash whiff discovery → deck switch to sample shell (**16/16 vs random and greedy mirror**); determinization accounting (serial dedup, visible-card subtraction, working partial-legality gate). Gate suite 29/32 vs random, 32/32 vs greedy; worst game 11.7 s of the bank. Anti-ex wall hedge v3 (commit `ba6177a`).
+
+### 2026-08-16 (early UTC) — Ship, crash, diagnose from the source
+v0.2 ERRORED instantly: kaggle-environments `exec()`s `main.py` with no `__file__` and takes the last callable as the agent. Fixed (`a7dbd34`), verified by running the actual `cabt` env locally. v0.2.1 ranked 5-8 (~478): replays showed no crashes/timeouts but **benchless insta-losses** (one loss ended turn 3 with all prizes intact). Deck v4 (`3f8468f`) submitted as v0.3 → ~570 (top 58%). FIELD-Zero schema frozen from 5 real episodes (`8ce4e6a`): 806 decisions, 0 minCount violations, leakage audit exit 0. Ladder-walk scouting found the ~1280-Elo lists: an identical Grimmsnarl/Munkidori 60 across multiple top teams, and a 4× Crustle wall deck.
+
+### 2026-08-16 (day) — Final submissions, ladder verdict, cluster handoff
+- Search cranked (dets 16 → 32, budget cap 1.2 → 2.5 s), timed cabt self-play safe on both decks. Submitted **v0.4a** (v4 deck) and **v0.4b** (mined Grimmsnarl list).
+- Verdict: v0.4a sank to ~510 while v0.4b climbed 604 → 785 peak, settling ~750–790 (top ~15% of 6,846) on identical search code. Both v0.4a losses analyzed: one more benchless death, one race lost to a Mega Lucario ex tank; Lucario list extracted as candidate v6 and benchmarked. **Final slot held** (see decision).
+- Quest handoff: `iminabo/field_zero:latest` on Docker Hub; `field_zero/slurm/{mine_data,bc_train}.sbatch`; everything merged to `main` for the teammate.
+- Repo reconciliation: `origin/imi` merged and pushed (`2e4fbf3`) after restoring ladder-validated agent code; README added; worklogs merged into this file (tracked going forward, superseding the earlier gitignore-them decision since the remote already tracked them).

@@ -37,10 +37,6 @@ checkpoints/
 *.tmp
 *.log
 
-# Worklog (local for now)
-journal.md
-problems_encountered.MD
-
 #Claude
 .claude/
 
