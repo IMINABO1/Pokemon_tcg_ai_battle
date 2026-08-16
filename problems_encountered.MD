@@ -175,6 +175,28 @@ Validation: 806 decisions across 5 episodes, 0 minCount violations, leakage audi
 
 **Status** — ✅ resolved (commit `8ce4e6a`)
 
+## 2026-08-16 — Oversubscribed benchmark rig produced fake 0-8 timeout losses
+
+**Problem** — In the Elo-band gauntlet, all three candidate agents went 0-8 against the band-900
+Lucario deck with every game ending "exhausted overage bank (TIMEOUT)" after only 10–20 decisions
+(~40 s/decision wall time), suggesting a catastrophic deck-specific engine hang.
+
+**Investigation** — A single-game probe with per-call timing against the same deck showed every
+decision ≤1.3 s and every engine call fast — no hang exists. The suite had been run as 3 concurrent
+jobs × 5 workers = 15 simultaneous search agents on 16 cores *alongside Docker Desktop's VM*;
+memory/CPU contention inflated wall-clock ~30×, and the harness's simulated 600 s bank correctly
+charged the inflated time as timeouts. The "deck interaction" was the test rig.
+
+**Resolution** — Rerun the full gauntlet sequentially at the proven 8-worker configuration. Rule
+recorded: wall-clock-budgeted benchmarks must never share the machine with other heavy jobs; scale
+parallelism by *games per job*, never by concurrent jobs.
+
+**Why this over alternatives** — Trusting the 0-8 would have disqualified strong candidates on
+corrupted data the night of the deadline; hunting a phantom engine hang would have burned the
+remaining hours.
+
+**Status** — ✅ resolved (gauntlet rerunning clean)
+
 ## 2026-08-16 — Branch merge silently mutated validated agent code
 
 **Problem** — After merging `origin/imi` (to push), the working tree's evaluator weights and search

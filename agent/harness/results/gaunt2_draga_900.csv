@@ -1,0 +1,9 @@
+match_id,name0,name1,winner,winner_name,actions,duration,p0_decisions,p0_max_s,p0_mean_s,p0_total_s,p1_decisions,p1_max_s,p1_mean_s,p1_total_s,error
+0,PIMC_Agent,Greedy_Agent,0,PIMC_Agent,71,26.279,65,1.7181,0.404,26.26,6,0.0003,0.0002,0.0,
+1,Greedy_Agent,PIMC_Agent,1,PIMC_Agent,166,64.042,48,0.0003,0.0001,0.01,118,2.3095,0.5424,64.0,
+2,PIMC_Agent,Greedy_Agent,1,Greedy_Agent,157,61.429,121,1.5992,0.5074,61.4,36,0.0002,0.0001,0.0,
+3,Greedy_Agent,PIMC_Agent,1,PIMC_Agent,133,45.262,35,0.0003,0.0001,0.0,98,2.0205,0.4615,45.23,
+4,PIMC_Agent,Greedy_Agent,0,PIMC_Agent,146,44.488,95,1.5375,0.4679,44.45,51,0.0002,0.0001,0.01,
+5,Greedy_Agent,PIMC_Agent,1,PIMC_Agent,67,21.515,13,0.0003,0.0001,0.0,54,1.1051,0.3981,21.5,
+6,PIMC_Agent,Greedy_Agent,0,PIMC_Agent,82,26.565,60,1.6784,0.4424,26.55,22,0.0002,0.0001,0.0,
+7,Greedy_Agent,PIMC_Agent,1,PIMC_Agent,93,31.829,28,0.0002,0.0001,0.0,65,1.855,0.4893,31.81,

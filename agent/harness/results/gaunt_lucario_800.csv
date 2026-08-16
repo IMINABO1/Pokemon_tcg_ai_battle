@@ -1,0 +1,9 @@
+match_id,name0,name1,winner,winner_name,actions,duration,p0_decisions,p0_max_s,p0_mean_s,p0_total_s,p1_decisions,p1_max_s,p1_mean_s,p1_total_s,error
+0,PIMC_Agent,Greedy_Agent,1,Greedy_Agent,123,55.358,67,2.5007,0.8255,55.31,56,0.0005,0.0002,0.01,
+1,Greedy_Agent,PIMC_Agent,1,PIMC_Agent,131,57.14,68,0.0004,0.0002,0.01,63,2.5006,0.9061,57.09,
+2,PIMC_Agent,Greedy_Agent,1,Greedy_Agent,170,105.529,94,2.5012,1.1219,105.45,76,0.0009,0.0002,0.02,
+3,Greedy_Agent,PIMC_Agent,0,Greedy_Agent,213,125.37,101,0.0006,0.0002,0.02,112,2.5011,1.1186,125.28,
+4,PIMC_Agent,Greedy_Agent,0,PIMC_Agent,30,11.692,27,1.8715,0.4327,11.68,3,0.0002,0.0001,0.0,
+5,Greedy_Agent,PIMC_Agent,0,Greedy_Agent,142,96.24,46,0.0004,0.0002,0.01,96,2.5008,1.0019,96.18,
+6,PIMC_Agent,Greedy_Agent,1,Greedy_Agent,145,807.834,71,733.6986,11.3761,807.7,75,0.0005,0.0002,0.01,Player 0 exhausted overage bank (TIMEOUT).
+7,Greedy_Agent,PIMC_Agent,0,Greedy_Agent,117,805.973,46,0.0004,0.0002,0.01,72,733.7899,11.1935,805.93,Player 1 exhausted overage bank (TIMEOUT).
