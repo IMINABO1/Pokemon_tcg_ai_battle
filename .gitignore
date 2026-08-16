@@ -37,5 +37,12 @@ checkpoints/
 *.tmp
 *.log
 
+# Worklog (local for now)
+journal.md
+problems_encountered.MD
+
+#Claude
+.claude/
+
 # NOTE: dist/, harness/results/, decks/, submission_logs/, card CSVs, and
 # engine binaries are tracked on purpose so the full picture is visible.
