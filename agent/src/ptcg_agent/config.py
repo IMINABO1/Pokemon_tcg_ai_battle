@@ -25,8 +25,7 @@ DETERMINIZATION_LEGALITY_RETRIES: int = 4
 EVAL_WEIGHTS = {
     # Prize differential: dominant term (your prizes taken - opponent's prizes taken)
     "prize_diff": 100.0,
-    # Remaining prizes: fewer remaining prizes is better
-    "own_prizes_remaining": -50.0,
+    "own_prizes_remaining": 0.0,
     # Active lethal-threat term (can KO active / active is lethal)
     "can_ko_active": 40.0,
     "active_in_danger": -35.0,

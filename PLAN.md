@@ -1,400 +1,210 @@
-# Pokémon TCG AI Battle — Phase 1 Implementation Plan (Heuristic + PIMC Search)
+# Pokémon TCG AI Battle — PLAN v2 (Fix, Strengthen, Win)
 
-## Context
+Supersedes PLAN v1 (2026-07-13, in git history). v1 planned *building* a heuristic+PIMC agent on a
+mistaken 4-week runway; that architecture is now **built** and the real runway is ~6 weeks. What
+changed: (1) the true deadlines are a month later than v1 assumed, (2) the built agent currently
+**loses 4/5 to a random agent** and we know exactly why (Section 4), (3) the Strategy Category
+writeup — a separately judged deliverable — does not exist yet. This plan is organized around those
+three facts.
 
-Competing in "The Pokémon Company - PTCG AI Battle Challenge Simulation" (Kaggle), a two-player
-imperfect-information Pokémon TCG ladder judged by continuous matchmaking + Gaussian skill rating.
-Goal: **top 10 of ~5,000 teams** (99.8th percentile) — not just "ship something that works."
-Timeline: today 2026-07-13; entry/merger deadline 2026-08-09; final submission 2026-08-16; ladder
-converges ~2026-08-31.
+## 1. Mission & scoring reality
 
-Deep research this session (engine source analysis + a verified web research pass) established:
-naive single-determinization search is theoretically exploitable, but **PIMC/ISMCTS-style search
-(sample plausible opponent hands, search each, average)** is the practical, provably-used approach
-in real TCG bots (e.g. Hearthstone AI Competition). Pure self-play RL is powerful but risks
-strategy-cycling/divergence (confirmed via Lux AI Season 1 and NFSP precedent) and is a multi-week
-infra project — too risky to attempt cold with a 4-week runway. The user explicitly chose to ship a
-**heuristic + PIMC search agent first**, fast, and only later (if time remains) swap the hand-built
-evaluator for a learned value net trained via self-play on the school GPU cluster, reusing the same
-search scaffold. This plan covers that first phase end-to-end, with explicit hooks for the later swap.
+Win **both** coupled categories (Strategy entry requires Simulation entry):
 
-The competition provides a genuine forward-model API (`cg.api.search_begin`/`search_step`) — hand
-the real C++ engine a hypothesized full game state (including a guessed determinization of the
-opponent's hidden cards) and step the actual rules engine forward. This is the centerpiece the whole
-architecture is built around.
+- **Simulation Category**: ladder win rate via continuous matchmaking + Gaussian skill rating.
+- **Strategy Category** (judged): Model Score **70%** (clarity of approach + rationale, originality
+  and technical soundness, consistency under repeated matches, robustness across matchups/initial
+  states, track performance), Deck Score **20%** (concept clarity, card choices supporting the game
+  plan), Report Score **10%** (structure, effective figures/tables). Writeup ≤ 2000 words + optional
+  media gallery.
 
-## Key engine facts (confirmed by direct source reading + independently re-verified this session)
+Implication: evidence-driven development — hypothesis → experiment → numbers → decision — *is* the
+writeup content, not overhead. `journal.md` / `problems_encountered.MD` (worklog discipline) are the
+collection mechanism; the writeup is assembled from them, not written cold in September.
+
+## 2. Timeline (absolute)
+
+- Today: **2026-08-01**
+- Entry / team-merger deadline: **2026-09-06** (both categories)
+- Final submission: **2026-09-13**
+- Judging: Sep 14 – Oct 11
+
+~6 weeks. Team: 2–3 people, ~20–40 combined hours/week. Goal is to win, so the extra month v1
+didn't know about goes to the RL track (Section 7) — the bet most teams won't successfully make —
+not to slack.
+
+## 3. Key engine facts (verified by direct source reading; carried from v1)
 
 - `search_begin`/`search_step`/`search_end`/`search_release` (`cg/api.py`) are backed by a real
   clone-and-step C++ tree (`Search.h`), not a mock.
 - **RNG is shared across every node of one search tree.** `Search::alloc()` does `*state = src`
   (`Search.h:238`), a shallow copy; `State::game` is a raw `Game*` pointer (`State.h:111`); the RNG
-  (`std::mt19937 rng`, `Game.h:61`) lives on `Game`. So all nodes descending from one `search_begin`
-  call share one RNG stream → **sequential-only traversal within one tree; never thread sibling
-  branches of the same search**. Parallelism across the 2 vCPUs must be cross-process (separate
-  `agent_ptr`/`Game` per OS process).
-- `search_step` **auto-advances through no-choice states** (`Search.h:187-190` loop calling
-  `state.step()` while `selectMax == 0`) — a single call can silently fast-forward through several
-  sub-decisions. Never assume the next returned prompt is the one you expected.
-- `SelectContext` is explicitly commented in the engine source as unreliable — **branch only on
-  `SelectType`/`Option.type`**, treat `SelectContext` as a log/debug hint only.
+  (`std::mt19937 rng`, `Game.h:61`) lives on `Game`. All nodes descending from one `search_begin`
+  share one RNG stream → **sequential-only traversal within one tree; never thread sibling branches
+  of the same search**. Parallelism across the 2 vCPUs must be cross-process.
+- `search_step` **auto-advances through no-choice states** (`Search.h:187-190`) — one call can
+  silently fast-forward through several sub-decisions, and the next prompt may belong to the
+  opponent. Never assume the returned prompt is the one you expected.
+- `SelectContext` is explicitly unreliable per engine comments — branch only on
+  `SelectType`/`Option.type`; treat `SelectContext` as a debug hint.
 - `search_begin` requires a **complete** guess (rejects an unresolved face-down opponent active,
-  error code 98, checked both in C++ `Search.h:96-98` and pre-checked in `api.py`).
-- The C++ engine supports mid-search deck reshuffling (`Search::shuffle`, `Search.h:196-211`) but
-  this is **not exported** to Python (missing from `Export.cpp` and `sim.py`) — a real capability
-  gap; live without it (fresh `search_begin` per decision already re-samples the determinization).
-- `cg/game.py`'s `Battle` class holds `battle_ptr` as a **class-level singleton** — only one local
-  battle can run per Python process; the local test harness must use multiprocessing, not threads.
-- Deck legality (`Api.h` `ApiBattleStart`, `Core.h`): exactly 60 cards; max 4 copies per named card
-  **except** Basic Energy (unlimited); max 1 ACE SPEC; at least 1 Basic Pokémon required. Specific
-  error codes exist for each violation.
-- 3000-action hard cap per game (`BattleData.h`); no per-move "thinking time" timeout is documented
-  anywhere in the provided source — **this is the single biggest open unknown** and must be probed
-  empirically as early as possible via a real Kaggle submission.
-- Canonical runtime card data source: `cg.api.all_card_data()`/`all_attack()` (from the same
-  compiled binary the match runs on), not `EN_Card_Data.csv` (a secondary/derived research artifact).
+  error 98, checked in `Search.h:96-98` and pre-checked in `api.py`).
+- Mid-search reshuffle (`Search::shuffle`, `Search.h:196-211`) is **not exported** to Python; live
+  without it (a fresh `search_begin` per decision re-samples the determinization anyway).
+- `cg/game.py`'s `Battle` holds `battle_ptr` as a **class-level singleton** — one local battle per
+  Python process; the harness must use multiprocessing, never threads.
+- Deck legality (`Api.h`, `Core.h`): exactly 60 cards; max 4 copies per name **except** Basic Energy
+  (unlimited); max 1 ACE SPEC; ≥1 Basic Pokémon. Specific error codes per violation.
+- 3000-action hard cap per game (`BattleData.h`); **no documented per-move timeout** — still the
+  biggest open unknown; probe empirically via real submissions (Section 6, Track A).
+- Canonical runtime card data: `cg.api.all_card_data()`/`all_attack()` — not `EN_Card_Data.csv`
+  (offline research artifact only).
 
-## 1. Repo scaffolding
+## 4. Current state (honest, as of 2026-08-01)
 
-Create a new `agent/` directory as a sibling to the existing read-only competition folders
-(`ptcg_engine/`, `sample_submission/`, CSVs/PDFs) — a git-tracked dev workspace, kept separate from
-provided files.
+**Built and working:** ~1,060 LOC agent (`agent/src/ptcg_agent/`: policy, search, evaluate,
+determinize, carddb, legality, budget, config, logging_utils); multiprocess local harness
+(`agent/harness/`); passing unit tests; legal 60-card Ceruledge deck (`agent/decks/candidate_v1.csv`);
+packaging + validation scripts; built `submission.tar.gz`; one real Kaggle episode (87163505).
 
-```
-pokemon-tcg-ai-battle/
-├── ptcg_engine/, sample_submission/, *.csv, *.pdf   # read-only, competition-provided
-└── agent/                                            # NEW dev workspace
-    ├── pyproject.toml                                # zero/stdlib runtime deps; pytest/pandas under [dev] only
-    ├── cg/ -> symlink to sample_submission/sample_submission/cg   # dev convenience only
-    ├── src/ptcg_agent/
-    │   ├── main.py            # thin Kaggle entrypoint: read_deck_csv() / delegate to policy.agent_decide
-    │   ├── deck.csv            # current candidate deck, source of truth
-    │   ├── carddb.py           # card knowledge base (Section 2)
-    │   ├── determinize.py      # own-state tracker + opponent belief + sampling (Section 4.2)
-    │   ├── search.py           # PIMC rollout + root-averaging (Section 4.3)
-    │   ├── evaluate.py         # evaluate_state(state, your_index) -> float (Section 4.4)
-    │   ├── policy.py           # obs -> SelectType dispatch -> action; the only thing main.py calls
-    │   ├── budget.py           # wall-clock budgeting/cutoffs
-    │   ├── logging_utils.py    # structured (state,action,outcome) logging — dev/harness only, stripped from shipped build
-    │   └── config.py           # EVAL_WEIGHTS, PER_DECISION_BUDGET_SECONDS, num_determinizations — one importable dict
-    ├── tests/                  # test_carddb.py, test_determinize.py, test_search_smoke.py, test_legality.py
-    ├── decks/                  # candidate_v1.csv..v5.csv + deck_notes.md
-    ├── harness/                # local_match.py, run_matches.py, results/
-    ├── scripts/                # build_submission.sh, validate_submission.py, explore_carddb.py
-    └── dist/                   # gitignored build output
-```
+**Broken:** the agent wins only **~25% vs Random** (5/20 measured, `agent/harness/results/suite_results.csv`).
 
-Rules:
-- **Never reimplement the ctypes bindings.** Vendor `sample_submission/sample_submission/cg/`
-  verbatim; `build_submission.sh` always copies a fresh, unmodified copy into the packaged artifact
-  at build time (even though dev uses a symlink for convenience).
-- `main.py` stays a thin wrapper (mirrors the sample's structure) delegating to
-  `policy.agent_decide(obs)` — keeps the Kaggle-facing entrypoint stable while internals iterate.
-- Packaged layout (built by `build_submission.sh`) is flattened per Kaggle's requirement: top-level
-  `main.py`, `deck.csv`, `cg/`, and one `ptcg_agent/` package directory (excludes `logging_utils.py`
-  / dev-only code).
-- Runtime code under `src/ptcg_agent/` must import stdlib + `cg` only — no `pandas`/`pytest` etc.
+> **Update 2026-08-01 (instrumented):** findings 1 and 2 below were a code-read *hypothesis* and are
+> **refuted by measurement**. With counters on every swallow site: 0 whole-decision fallbacks, 0
+> `search_begin` failures, 17,532/17,532 candidate rollouts scored, 0 rollout exceptions; the search
+> discriminates (23.8% of decisions pick a non-default action, 23.7% are degenerate ties). The search
+> runs fully — the agent loses on **decision quality**, and **win/loss tracks game length** (wins
+> 15–36 actions, losses 148–192). Real culprits are findings 3, 4, 8, 6, in that priority. Findings
+> 1–2 are kept below as a record of what was ruled out. See [[problems_encountered]].
 
-## 2. Card knowledge base (`carddb.py`)
+Original code-read diagnosis (2026-08-01), ranked:
 
-Load once at import from `cg.api.all_card_data()`/`all_attack()` (not the CSV — CSV is for offline
-human research/cross-checking only):
+1. **[RULED OUT] Search never actually runs.** Matches of 42–125 actions finished in 0.63–2.06 s *total*, vs
+   `PER_DECISION_BUDGET_SECONDS = 2.0` × `NUM_DETERMINIZATIONS = 6` (`config.py:3-5`). Every failure
+   path is silently swallowed with no counter: per-candidate `except: pass` (`search.py:164-165`),
+   per-determinization `except: continue` (`search.py:144-147`), whole-decision fallback
+   (`policy.py:130-136`). When all rollouts fail, every average stays −1e9 and the code returns
+   `candidates[0]` (`search.py:175,181`) — a deterministic "always option 0" policy, strictly worse
+   than random, and *indistinguishable from a working search from the outside*.
+2. **[RULED OUT] Likely root exception:** `_rollout` re-steps from the same `root_state.searchId` for every
+   candidate (`search.py:77`); if the engine consumes the parent state on step, candidates 1..n die
+   ("Released item"). `search_release` is imported but never called (`search.py:9`).
+3. **Eval is information-dependent, punishing turn-ending.** Leaves are evaluated regardless of
+   whose prompt is showing (`search.py:97-99`); after attack/END the observation is the opponent's,
+   `me.hand is None`, so `_score_hand` (`evaluate.py:140-149`) drops the +8 supporter term — keeping
+   the turn always outscores attacking. (Orientation and terminal signs verified correct:
+   `evaluate.py:174-184`.)
+4. **Eval weights reward hoarding.** `supporter_in_hand = +8`, `hand_size = +2` (`config.py:25-26`):
+   playing a supporter costs −10 with no offsetting term; `energy_attached = 10` vs `hp_swing = 0.1`
+   values one energy attachment equal to 100 damage dealt.
+5. **COUNT fast-path returns a count as an index** (`policy.py:100-102` returns `[select.maxCount]`)
+   → engine error 5 → instant forfeit in the match loop (`local_match.py:88-93`). `YES_NO → [0]` and
+   `SPECIAL_CONDITION → [0]` unconditionally (`policy.py:95-97,105-106`).
+6. **Degenerate determinization.** Hardcoded 44-card filler + pad-with-Basic-Fire-id-2 can produce
+   illegal decks → `search_begin` raises → feeds finding 1 (`determinize.py:92-94,145-153,176-180`).
+   `update_from_logs` re-scans all logs every decision and appends without dedupe → opponent belief
+   becomes nonsense mid-game (`determinize.py:105-116`). `legality.py` exists but is unused here.
+7. **Candidate enumeration truncation.** Only the first 8 options are kept (`search.py:43-46`) —
+   ATTACK/END can be truncated off a busy MAIN prompt; multi-selects get the single candidate
+   `list(range(max_c))` (`search.py:56-60`); decline-`[]` is always tried first (`search.py:49-53`).
+8. **Rollout quality.** Depth 3 prompts is less than one PTCG turn (`config.py:5`); continuation is
+   `candidates[0]` for *both* players (`search.py:90`); budget expiry starves later candidates
+   (`search.py:151-152`).
 
-- `CARD_BY_ID: dict[int, CardData]`, `ATTACK_BY_ID: dict[int, Attack]`, `CARDS_BY_NAME`,
-  `BASIC_ENERGY_IDS`, `ACE_SPEC_IDS` — precomputed once, pure/side-effect-free after load.
-- `energy_cost_met(attack, attached) -> bool` — cheap feasibility filter for move-generation pruning
-  and opponent-hand plausibility (not authoritative; the real engine remains ground truth).
-- `compute_damage(attacker, attack, defender, tools, boosts) -> int` — first-order estimate (base
-  damage, weakness, resistance); explicitly does **not** generically parse conditional attack text.
-- `CARD_TEXT_DAMAGE_MODIFIERS: dict[int, Callable]` — small hand-curated override table for the
-  ~10-20 highest-value cards relevant to our deck/common threats.
+## 5. Phase 0 — Make the search *strong* (Aug 1 → ~Aug 10) · critical path · strongest coder
 
-**Explicitly out of scope for Phase 1: a general attack/ability text parser.** With ~2,022
-attack/ability rows of free text, this is a multi-week project on its own. Instead, lean on the real
-search engine (`state.step()`) as ground truth for what a move *does* — the heuristic only needs to
-score resulting states, not predict effect text. This is a permanent, documented limitation, not a
-"TODO."
+**Step 0 is done** (2026-08-01): observability counters (`stats.py`) surfaced into the harness CSV.
+They proved the search runs fully and reordered everything below — the plumbing fixes (old items 1)
+are deprioritized because the failures they target do not occur. Order now runs by measured impact,
+each fix verified against the counters (degenerate-tie rate, fallback rate) and win rate vs Random:
 
-## 3. Deck selection
+1. **Evaluator (highest impact).** Rebalance `EVAL_WEIGHTS`: remove the hoarding incentive
+   (`supporter_in_hand +8`, `hand_size +2` make playing a supporter cost −10), raise `hp_swing`
+   relative to `energy_attached` (currently 0.1 vs 10 → one energy = 100 damage), fix the own-prize
+   double-count. Make the leaf term observability-invariant (opponent-perspective leaves have
+   `me.hand is None`, silently dropping the +8 supporter term and biasing against ending the turn) —
+   evaluate only at own-perspective prompts or guard the hand term. Target: degenerate-tie rate
+   (baseline 23.7%) drops materially.
+2. **Rollout quality.** Depth 3 prompts is < one PTCG turn; deepen to end-of-own-turn. Opponent
+   continuation should be greedy-by-eval from the opponent's perspective, not `candidates[0]`.
+3. **Opponent-belief drift (long-game collapse).** `update_from_logs` re-scans and re-appends every
+   decision without dedupe/reset (`determinize.py:105-116`) → belief degrades as games lengthen,
+   matching the observed "loses long games" pattern. Dedupe/reset; legality-check sampled worlds via
+   the unused `legality.py`.
+4. **Fast-paths & enumeration (correctness backstops).** Fix COUNT (returns a count where an index
+   is expected — `policy.py:100-102`), YES_NO, SPECIAL_CONDITION via 1-ply evaluate; stop truncating
+   ATTACK/END off busy MAIN prompts and privileging decline-`[]`. (Not currently forfeiting in the
+   Ceruledge-vs-sample suite, but latent.)
+5. **[deprioritized] Rollout state lifecycle** (old item 1): call `search_release` for hygiene, but
+   the "candidates 1..n error out" failure was measured at zero — not a strength lever.
 
-**Build a focused, single-energy-type efficient-attacker deck** rather than adapt the sample's
-mono-Water mill deck. Rationale: a deck whose win condition is "attach energy, attack for
-near-lethal, repeat" is far easier for a heuristic+shallow-search agent to pilot correctly than a
-combo/mill deck requiring precise sequencing — and early on, our own play quality (not deck power)
-is the bottleneck. Strong candidates already identified from the card pool: **Ceruledge** (220 dmg /
-1 Fire energy) or **Palafin ex** (250 dmg / 1 Water energy after setup).
+**Gate G0:** ≥90% vs Random over ≥100 multiprocess matches, AND the search agent beats the
+heuristic-only (no-search) agent head-to-head. Numbers logged to `journal.md`.
 
-First placeholder decklist (Week 1): pick one such attacker line (3-4 copies per evolution stage),
-add high-value competitive Supporters for consistency (Lillie's Determination, Judge, Boss's Orders,
-Cyrano), 12-16 Basic Energy of the matching type (much less than the sample's 35, since cost per
-attack is low), 1 ACE SPEC if it synergizes (e.g. Maximum Belt vs. ex-heavy opponents), verified
-against the legality checker before ever calling `search_begin`/`battle_start`.
+## 6. Phase 1 — Strength & ladder (Aug 10 → Aug 29) · parallel tracks
 
-Treat this as a placeholder to unblock end-to-end testing, not final. Once the local harness exists
-(Section 5), build 3-5 candidate decklists and round-robin them locally (same agent piloting each) to
-get empirical relative-strength signal — ideally before the first submission, but must not block it;
-`deck.csv` is cheap to swap later without touching agent code.
+- **Track A — agent strength.** Probe the undocumented per-move timeout with real submissions early;
+  keep a legal submission on the ladder **at all times** (the rating clock only runs while
+  submitted). Cross-process PIMC parallelism (one determinization per OS process, 2 vCPUs).
+  Opponent-response modeling in rollouts. Eval-weight autotuning on the cluster's CPUs: perturb →
+  fixed match budget vs a fixed opponent pool → keep/discard (the v1 §7 hook; `EVAL_WEIGHTS` is
+  already a flat dict).
+- **Track B — deck.** 3–5 candidate decks vs `candidate_v1` (Ceruledge); round-robin on the
+  now-trustworthy harness; ≥200 matches per pairing before believing a difference. Deck rationale
+  recorded as it happens → this *is* the Deck Score (20%) content.
+- **Track C — Strategy writeup (continuous, starts now).** Maintain `journal.md` /
+  `problems_encountered.MD` per the worklog skill. Build the Kaggle notebook rendering harness CSVs
+  (win-rate curves, matchup tables, fallback-rate-over-time — the "broken search was invisible"
+  story is itself strong writeup material). Draft the ≤2000-word writeup by **Aug 29** so September
+  is results-refresh only. Enter both categories on Kaggle well before Sep 6.
 
-## 4. Core agent architecture
+## 7. Phase 2 — RL value net (Aug 15 → Sep 5, overlaps Phase 1) · 2nd/3rd teammate + GPU cluster
 
-### 4.1 Top-level dispatch (`policy.py`)
+The "win" bet: a learned evaluator inside real-engine PIMC search — most teams will ship either pure
+heuristics or pure RL; the combination is the edge.
 
-```python
-def agent_decide(obs_dict: dict) -> list[int]:
-    obs = to_observation_class(obs_dict)
-    if obs.select is None:
-        return read_deck_csv()
-    try:
-        return _decide(obs)
-    except Exception:
-        log_exception_once()
-        return _fallback_decide(obs)   # trivial, cannot itself fail — e.g. first legal minCount options
-```
+- Self-play data generation reuses the harness match driver; per-decision logging
+  (`logging_utils.py`) already emits (state, action, outcome) JSONL.
+- The net swaps into the `evaluate_state` seam — `search.py` accepts `evaluator=` (v1 §7 hook,
+  already built); search/policy control flow untouched.
+- Anti-cycling from day one: frozen-snapshot opponent pool (Lux AI S1 / NFSP precedent); never naive
+  vanilla self-play.
+- **Gate G2 (Sep 3):** the RL evaluator must beat the tuned-heuristic agent ≥55% over ≥300 local
+  matches to ship. Otherwise the heuristic ships — the gate keeps the win-bet from becoming a
+  lose-bet.
 
-`_decide` branches on `obs.select.type` only (never `SelectContext`):
-- **Small/cheap selects** (YES_NO, COUNT, SPECIAL_CONDITION, single-legal-attack, EVOLVE,
-  switch/retreat menus): resolved by direct heuristic rules or 1-ply `evaluate_state` lookahead —
-  not worth a full determinization+search cycle.
-- **MAIN-phase and trajectory-changing decisions**: routed through full PIMC search (`search.py`).
-- **Large combinatorial CARD selects** (deck search): heuristically shortlist candidates first, then
-  1-ply-score only the shortlist — never blindly full-search a 20+-option deck search.
+## 8. Freeze & submit
 
-### 4.2 Determinization sampling (`determinize.py`)
+- **Sep 5:** lock deck + agent candidate.
+- **Sep 6:** entry/merger deadline (already entered; hard backstop).
+- **Sep 6–12:** validation only — `validate_submission.py` against the packaged artifact, packaged
+  matches, edge-case sweep (minCount 0, forced discards, COUNT selects, `select is None` deck
+  request). Finalize writeup + media gallery. No risky changes.
+- **Sep 13:** final submissions, both categories.
 
-- **Own deck/prize**: not actually probabilistic — exact set-subtraction bookkeeping. Start from the
-  known 60-card `deck.csv`, subtract everything observed moving via `obs.logs`; prize identity
-  resolves via elimination as prizes get revealed. Implement as deterministic tracking, not sampling
-  (a bug here would corrupt every `search_begin` call, so it needs dedicated unit tests).
-- **Opponent deck/hand/prize/active**: genuine sampling via an `OpponentBelief` object, incrementally
-  updated from `obs.logs` (known / constrained / fully-unknown per card). For fully-unknown slots,
-  sample from an `ArchetypeConsistencyPrior` — weighted toward types/colors already observed in the
-  opponent's play, never pure-uniform over all 1,267 cards (which would produce implausible worlds).
-- **Legality gate**: every sampled determinization must independently pass the same legality checker
-  from `carddb.py` before calling `search_begin` (bounded retries, then fall back to a generic legal
-  filler deck) — a pathological belief state must never crash a turn's decision.
-- **Budget**: N=6-10 determinizations per non-trivial decision, run strictly sequentially (per the
-  shared-RNG-per-tree finding — no in-process parallel search). Conservative default total budget of
-  **1.5-2.5s wall-clock per decision**, single tunable constant in `config.py`
-  (`PER_DECISION_BUDGET_SECONDS`), enforced by `budget.py` checking `time.monotonic()` between every
-  determinization and tree expansion, bailing to "best answer so far" on expiry. **This number is a
-  placeholder pending empirical measurement against the real Kaggle per-move timeout — treat probing
-  it as a top priority of the first real submission.**
-- Cross-process parallelism (one OS process per determinization, doubling throughput on the 2 vCPUs)
-  is a valid Phase 1.5 optimization, explicitly deferred — ship the safe sequential version first.
+## 9. Risks
 
-### 4.3 Search shape: shallow PIMC rollout with root-averaging (concrete default, not full ISMCTS)
+Carried from v1 (still live): undocumented per-move timeout (probe early, conservative budget);
+shared RNG per tree (sequential traversal only); `SelectContext` unreliable (key off `SelectType`);
+`Battle` singleton (multiprocess harness); own-state bookkeeping corrupting `search_begin` (unit
+tests).
 
-Full UCT-tree ISMCTS needs many iterations to pay off — not affordable within a low-single-digit-second,
-2-vCPU, ctypes-round-trip-per-step budget. Default instead to **root-parallelized PIMC**: for each
-sampled determinization, do a shallow fixed-depth expectimax (2-3 of our decision points, opponent's
-response approximated heuristically) via `search_begin`→repeated `search_step`, score leaves with
-`evaluate_state`, then **average action scores across all N determinizations** at the root to pick
-the final action. This is the concrete, resource-realistic version of "PIMC/ISMCTS-style search."
+New in v2:
+- **Silent-fallback regression** — the Phase 0 counters stay in as permanent regression checks;
+  fallback rate is reported in every harness run and watched in every A/B.
+- **RL non-convergence or cycling** — gate G2 + frozen-snapshot pool; heuristic agent is never at
+  risk as the shipped fallback.
+- **Autotune overfitting** to Random/self — tune against a fixed, diverse opponent pool (random,
+  heuristic-only, prior snapshots, alternate decks).
+- **Single-deck metagame blindness** — Track B breadth + watching ladder replays for common
+  archetypes.
 
-```python
-def choose_action(obs, belief, budget, evaluator=evaluate_state) -> list[int]:
-    ...  # sample determinizations, search_begin per one, enumerate_candidate_actions, rollout, average, select_best
+## 10. Team & cadence
 
-def _rollout(search_id, action, depth, budget) -> float:
-    ...  # apply action via search_step, greedy 1-ply continuation to `depth`, evaluate_state() at leaf/terminal
-```
-
-Implementation notes: always `search_release`/`search_end` every explored node (uncapped pool = leak
-risk against the 12.2 GiB RAM cap); candidate-action enumeration reuses the same heuristic shortlist
-logic as Section 4.1 for combinatorial menus, shared in one module rather than duplicated. Defer real
-UCT/node-reuse ISMCTS to a later iteration if profiling shows headroom.
-
-### 4.4 Heuristic evaluator (`evaluate.py`)
-
-```python
-def evaluate_state(state: State, your_index: int) -> float: ...
-```
-
-Weighted sum of small, independently-testable sub-scores (weights in `config.EVAL_WEIGHTS`, a flat
-dict, for later autotuning):
-- **Prize differential** (dominant term — the actual win condition)
-- **Board HP swing** (your Pokémon HP% minus opponent's)
-- **Active lethal-threat term** (can I be KO'd next turn / can I KO them — distinct from raw HP%)
-- **Energy tempo** (attached energy count + attack-affordability via `energy_cost_met`)
-- **Board development** (Pokémon count, evolution progress, bench fill)
-- **Hand quality** (own hand size, playable draw/search Supporters, legal attack availability)
-- **Special conditions** (penalty/bonus for status effects)
-- **Terminal states** short-circuit to a large sentinel before any of the above
-
-Each sub-score is its own named function (`_score_prizes`, `_score_hp`, etc.) for unit testing and
-later autotuning.
-
-## 5. Local test harness (`harness/`)
-
-Built directly on `cg.game.battle_start`/`battle_select`/`battle_finish` — no Kaggle runner needed.
-
-- `local_match.py::run_one_match(deck_a, agent_a, deck_b, agent_b, max_actions=3000) -> MatchResult`
-  drives one game, always calling `battle_finish()` in `finally`. Captures winner, result/reason
-  code, turn/action counts, wall-clock time, and any exception raised inside either agent (recorded
-  as a forced loss + logged with the offending obs).
-- **`Battle.battle_ptr` is a class-level singleton** — only one match per process. `run_matches.py`
-  must use `multiprocessing`/`ProcessPoolExecutor` (one match per worker process), never in-process
-  concurrent matches.
-- Match suites to run: (a) candidate vs. sample's random agent (sanity baseline), (b) candidate vs.
-  sample's mill deck, (c) candidate vs. itself (determinism/self-consistency), (d) round-robin across
-  3-5 candidate decklists. Collect win rate, game length, and **fallback-path trigger rate** (a proxy
-  for hidden bugs) into CSVs under `harness/results/`.
-- Structure the match-driving loop so it's directly reusable later as the skeleton of a self-play
-  data-generation harness (only the per-decision logging payload changes, not the driving mechanics).
-
-## 6. Submission packaging & validation
-
-`scripts/build_submission.sh`:
-1. Wipe/recreate `dist/staging/`.
-2. Copy `src/ptcg_agent/*.py` (excluding `logging_utils.py`/dev-only code) → `staging/ptcg_agent/`.
-3. Copy `main.py` → `staging/main.py` (top level, per Kaggle's requirement).
-4. Copy the chosen `decks/candidate_vN.csv` → `staging/deck.csv`.
-5. Copy `sample_submission/sample_submission/cg/` fresh (all 4 compiled binaries) → `staging/cg/`.
-6. `tar -czf dist/submission.tar.gz -C staging .` — verify `main.py` is at the tar's top level.
-7. Check size against the 197.7 MiB cap (currently trivial: ~5.3 MB of binaries).
-8. **Hard-fail the build** (not just warn) if the deck fails the legality checker.
-
-`scripts/validate_submission.py` — smoke test the **packaged artifact** (subprocess without dev
-`PYTHONPATH`):
-- Runs standalone with only stdlib + bundled `cg`.
-- `read_deck_csv()` works from cwd and via the `/kaggle_simulations/agent/` fallback path.
-- Runs at least one full local match via the packaged `main.py`, zero uncaught exceptions.
-- Explicitly exercises edge cases: `minCount == 0`, forced full-hand discard, ability/skill ordering,
-  `COUNT` selects, the initial `obs.select is None` deck request — hand-construct matchups to hit
-  these if incidental coverage doesn't.
-- Confirms the `try/except` fallback wrapper is present in the packaged build's actual call path, and
-  that `_fallback_decide` itself cannot fail (no dependency on search/carddb/network/disk).
-- No absolute paths, no disk writes in the shipped build.
-- Times a sample of decisions from the packaged artifact against `PER_DECISION_BUDGET_SECONDS` as a
-  proxy check pending the real Kaggle-side timeout measurement.
-
-## 7. Hooks for the later learned-evaluator phase
-
-- **`evaluate_state(state, your_index) -> float`** is the seam — `search.py` should accept an
-  `evaluator` parameter (defaulting to the heuristic) so Phase 2 swaps in a neural net forward pass
-  without touching search control flow.
-- **Structured per-decision logging** (`logging_utils.py`, active only in harness runs, stripped from
-  shipped builds): log `{state_features, action_taken, determinization_summary, chosen_score,
-  eventual_outcome}` per decision to JSONL — exactly the (state, action, outcome) tuples needed to
-  bootstrap a value net later, versioned via a `schema_version` field.
-- **`config.EVAL_WEIGHTS`** as a flat importable dict is deliberately shaped for an
-  autoresearch-style overnight autotuning loop later: perturb weights, run a fixed budget of local
-  matches via `run_matches.py` against a fixed opponent pool, score by win rate, keep/discard. Note
-  this needs no GPU — the school cluster's value here is CPU core count for parallel match
-  simulation, not tensor compute, until an actual learned net exists.
-- **`OpponentBelief`**/`ArchetypeConsistencyPrior` is a natural seam for a future learned
-  opponent-modeling component, without touching `search.py`.
-
-## 8. Week-by-week timeline (compressed)
-
-Priority throughout: get something legal and non-crashing on the ladder **early**, then iterate.
-Compressed from the original 5-week draft to buy a full extra week for the self-play RL track,
-since a search-only agent is unlikely to be sufficient for a top-10-of-5,000 finish on its own.
-
-- **Week 1 (Jul 13-19)**: scaffolding, vendor `cg`, `carddb.py` + tests, legality checker, first
-  placeholder decklist, ship a **heuristic-only (no search)** agent — legal, crash-resistant,
-  packaged and validated per Section 6. **Submit by day 3-4 of the week** (not day 7) specifically
-  to start the clock on probing the undocumented per-move timeout — the ladder clock only starts
-  once something is actually submitted. Build the local harness and A/B test 3-5 candidate decklists
-  while that submission accumulates games in the background.
-- **Week 2 (Jul 20-26)**: build `determinize.py` + `search.py` (PIMC rollout + root-averaging);
-  integrate into `policy.py`, keeping the Week-1 path as fallback/fast-path; tune budget constants
-  using Week 1's empirical timeout signal; confirm search-augmented agent beats the heuristic-only
-  agent locally with clear margin before trusting it.
-- **Week 3 (Jul 27-Aug 2)**: submit the search-augmented agent, harden edge cases, finalize decklist
-  from local A/B + real ladder signal — **locked in a full week ahead of the Aug 9 entry deadline.**
-  In parallel, kick off the RL track: build the self-play data-generation harness (reusing the local
-  match driver from Section 5) and the training loop skeleton on the school GPU cluster.
-- **Week 4 (Aug 3-9, entry/merger deadline)**: full week dedicated to the RL track — train a learned
-  value net via self-play to swap into `evaluate_state` (search/policy logic untouched), apply
-  anti-cycling safeguards from the start (frozen-snapshot/opponent-pool style, per the Lux AI/NFSP
-  findings — do not run naive vanilla self-play), continuously A/B against the Week 3 locked-in
-  search agent in local testing.
-- **Week 5 (Aug 10-16, final deadline)**: decision checkpoint around **Aug 14** — ship the RL version
-  only if it's clearly and consistently beating the locked-in search-only agent in local testing;
-  otherwise ship the proven search-only agent, which is never at risk since it's already locked in.
-  Reserve the last 1-2 days purely for validation — no risky last-minute changes.
-- **Aug 17-31**: no further submissions possible. Use remaining GPU cluster time to continue the RL
-  track for a future iteration if it didn't make the cutoff, and log postmortem learnings (which
-  heuristic terms mattered, whether search vs no-search moved the rating, whether the RL version
-  would have won the A/B given more time) regardless of what shipped.
-
-## Explicit risks and how the plan handles each
-
-1. **Undocumented per-move timeout** — conservative default budget + empirical probing via an early
-   real submission + fast heuristic-only fallback path.
-2. **RNG shared across one search tree** — strictly sequential traversal within a tree; any future
-   parallelism is cross-process only, never in-process threads sharing one `agent_ptr`.
-3. **`SelectContext` unreliable** — all control flow keys off `SelectType`/`Option.type` only.
-4. **No `SearchShuffle` binding exposed to Python** — likely fine since each decision re-samples a
-   fresh determinization anyway; flagged for early smoke-test validation, not independently fixable
-   (no build toolchain for the compiled binaries is present in this repo).
-5. **Deck chosen under zero empirical strength data initially** — explicit local A/B testing plan
-   before treating any deck as final; `deck.csv` is cheap to swap later.
-6. **No general attack/ability text parser** — permanent, documented Phase 1 limitation; real search
-   engine resolution is the source of truth, not text prediction.
-7. **Own-prize/deck bookkeeping bugs would corrupt every `search_begin` call** — implemented as exact
-   deterministic tracking (not sampling) with dedicated unit tests.
-8. **`Battle` singleton limits local harness to one match per process** — `run_matches.py` uses
-   multiprocessing, documented in `harness/README`.
-9. **macOS dev machine vs. Kaggle's Linux inference container** — package ships all 4 provided
-   binaries regardless of dev platform; `sim.py`'s own platform dispatch picks the right one at
-   runtime; smoke-test on a Linux environment before first submission if available.
-10. **Self-play RL track might not converge, or might quietly cycle into a bad strategy, within the
-    compressed Week 3-5 window.** Handled by: baking in known anti-cycling safeguards
-    (frozen-snapshot/opponent-pool distillation, per the Lux AI Season 1 precedent) from the start
-    rather than attempting naive self-play first; treating the Week 3 locked-in search-only agent as
-    a guaranteed, never-at-risk fallback; and gating the swap on a hard local-A/B-win requirement at
-    the Aug 14 decision checkpoint rather than shipping the RL version on faith.
-
-## Critical files
-
-- `sample_submission/sample_submission/cg/api.py` — the entire `search_begin`/`search_step`/
-  `all_card_data` surface the architecture is built on; vendor unmodified.
-- `sample_submission/sample_submission/cg/game.py`, `cg/sim.py` — local harness foundation;
-  `sim.py`'s singleton `Battle` class dictates the multiprocessing requirement.
-- `EN_Card_Data.csv` — offline research/cross-check reference only, not runtime source of truth.
-- `ptcg_engine/ptcgProgram 22/Search.h` — ground truth for search-tree semantics (shallow `alloc()`,
-  shared `Game*`/RNG, auto-advance loop) that directly shaped the sequential-search and
-  result-parsing design above.
-- `sample_submission/sample_submission/main.py`, `deck.csv` — structural template for `main.py` and
-  the exact `deck.csv` format.
-
-## Verification
-
-- Unit tests (`tests/`) for `carddb.py` lookups, deck legality, and `determinize.py`'s own-state
-  bookkeeping, run via `pytest`.
-- Local harness matches (Section 5) as the primary end-to-end signal: agent-vs-sample-random,
-  agent-vs-sample-mill, agent-vs-self, and cross-decklist round robins, tracked by win rate/game
-  length/fallback-trigger rate.
-- `scripts/validate_submission.py` run against the actual packaged `.tar.gz` before every submission
-  (Section 6 checklist) — this is the closest available proxy for Kaggle's real runtime before an
-  actual submission confirms it.
-- First real Kaggle submission (target: Week 2) doubles as validation of the packaging pipeline and
-  as the only way to empirically learn the true per-move timeout.
-
-## Notes and clarifications
-
-**Plan in one paragraph:** we can't see the opponent's cards, but we do have the real game engine in
-our pocket. So instead of guessing once, we make several different reasonable guesses about what the
-opponent might be holding, replay each guess forward in the real engine to see how a move plays out,
-and average the results to decide what to actually do — that's the whole trick. On top of that
-guessing-and-searching agent, we're using a simple hand-built scorecard (prizes taken, health, board
-state, etc.) instead of a trained model at first, because a trained self-play model is a multi-week
-project that can quietly go wrong (a real, documented failure mode) if rushed — so we ship the safer
-version first and only swap in a learned model later if it demonstrably wins more.
-
-**What "ply" means:** one single move by one single player, not a full turn. A 1-ply lookahead means:
-try each option, imagine the very next position after making it, score just that position, and stop —
-no further guessing about what happens after. It's the cheap version of lookahead, used for small/easy
-decisions. A 2-ply lookahead would also imagine the opponent's best response before scoring, and so
-on, each additional ply going one move deeper into the "if I do this, then they do that" chain.
-
-**What "PIMC" means (Perfect Information Monte Carlo):** our chosen search method. Normal game-tree
-search assumes you can see the whole board with no secrets. Our game has secrets (the opponent's
-hand). PIMC's trick: pretend the secret doesn't exist, one guess at a time. Guess a plausible
-opponent hand, treat that guess as if it were simply true (no hidden information left — "perfect
-information"), and run ordinary search on that pretend-perfect-information version of the game.
-Repeat with a handful of different guesses, then average the results across all of them to pick the
-actual move. It's the simpler, cheaper cousin of `ISMCTS`, chosen specifically because it fits the
-2-vCPU inference budget, whereas the fancier method needs more compute to pay off.
+- **P1 (strongest coder):** Phase 0 → Track A.
+- **P2:** Track B → Phase 2 RL ownership.
+- **P3 (or rotating):** Track C + harness/results ops.
+- `journal.md` is the sync point (decisions with rationale + numbers); `problems_encountered.MD` for
+  substantive problems only, per the worklog skill. Weekly checkpoint against gates G0/G2; if G0
+  slips past Aug 12, Phase 2 start slips with it — the RL track depends on a trustworthy harness
+  signal, not calendar dates.

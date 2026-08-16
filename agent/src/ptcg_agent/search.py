@@ -288,6 +288,8 @@ def search_pimc_action(
 
     determinizations_run = 0
 
+    stats.incr("search_decisions")
+
     while determinizations_run < NUM_DETERMINIZATIONS and not budget.is_expired():
         det = _legal_determinization(obs, state_tracker, belief, DETERMINIZATION_LEGALITY_RETRIES)
 
@@ -303,14 +305,18 @@ def search_pimc_action(
             )
         except Exception:
             # If search_begin rejects determinization, continue to next
+            stats.incr("search_begin_fail")
             determinizations_run += 1
             continue
+
+        stats.incr("search_begin_ok")
 
         try:
             for cand in candidates:
                 if budget.is_expired():
                     break
                 cand_tuple = tuple(cand)
+                stats.incr("candidates_total")
                 try:
                     score = _rollout(
                         root_state,
@@ -322,8 +328,9 @@ def search_pimc_action(
                     )
                     action_scores[cand_tuple] += score
                     action_counts[cand_tuple] += 1
+                    stats.incr("candidates_scored")
                 except Exception:
-                    pass
+                    stats.incr("rollout_fail")
         finally:
             try:
                 search_end()
@@ -335,13 +342,20 @@ def search_pimc_action(
     # Select candidate with highest average score
     best_cand = candidates[0]
     best_avg_score = -float("inf")
+    avgs = []
 
     for cand in candidates:
         ctup = tuple(cand)
         cnt = action_counts[ctup]
         avg = (action_scores[ctup] / cnt) if cnt > 0 else -1e9
+        avgs.append(avg)
         if avg > best_avg_score:
             best_avg_score = avg
             best_cand = cand
+
+    if len(avgs) > 1 and max(avgs) - min(avgs) < 1e-9:
+        stats.incr("search_degenerate")
+    if best_cand != candidates[0]:
+        stats.incr("search_picked_nonzero")
 
     return best_cand

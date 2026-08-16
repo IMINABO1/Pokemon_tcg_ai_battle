@@ -20,6 +20,7 @@ from .budget import BudgetTracker, budget_for_decision
 from .config import LOW_OVERAGE_CUTOFF_SECONDS
 from .determinize import StateTracker, OpponentBelief
 from .search import search_pimc_action, enumerate_candidate_actions
+from . import stats
 try:
     from .logging_utils import log_decision
 except ImportError:
@@ -182,6 +183,7 @@ def _decide(obs: Observation, overage_seconds=None) -> list[int]:
 
 def agent_decide(obs_dict: dict) -> list[int]:
     """Main policy entrypoint."""
+    stats.incr("decisions")
     try:
         # remainingOverageTime lives only in the raw dict; to_observation_class
         # drops unknown keys, so read it before converting.
@@ -193,6 +195,7 @@ def agent_decide(obs_dict: dict) -> list[int]:
         return _decide(obs, overage)
     except Exception as e:
         # Exception handler bails safely to fallback
+        stats.incr("decision_fallback")
         try:
             obs_obj = to_observation_class(obs_dict) if obs_dict else None
             return _fallback_decide(obs_obj)
