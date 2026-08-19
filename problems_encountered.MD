@@ -203,14 +203,20 @@ remaining hours.
 against the band-winning decks, then went 37-56 (Elo 412) in real ranked play — losing to
 opponents rated 300-500. The final-slot decision was made on evidence that did not transfer.
 
-**Investigation** — Two compounding causes. (a) *Proxy gap:* gauntlet opponents were greedy
-scripts piloting strong decks; real low-band opponents are competent rule-based agents (public
-sample-agent forks), so our measured matchup edges were inflated. (b) *Skill-expression gap:*
-Dragapult's signature attack places six damage counters anywhere — a combinatorial multi-select.
-Our candidate enumeration offers a handful of heuristic subsets (top-k / first-k / windows), which
-cannot express surgical spread targeting; the deck's power is exactly the decision type our search
-is weakest at. The band census's own caveat (Dragapult results track pilot quality) was recorded
-and then under-weighted in the decision.
+**Investigation** — Two rounds; the second (replay forensics, 14 of our games vs 60 top-band
+Dragapult player-games) overturned the first. (a) *Proxy gap (confirmed):* gauntlet opponents were
+greedy scripts; real opponents are competent rule-based agents, so measured edges were inflated.
+(b) *First skill-gap hypothesis (REFUTED):* "our search can't do combinatorial counter placement" —
+false; placement prompts are trivial 1-of-N selects and we answer them all. The counters simply
+never get generated: winners fire **Phantom Dive 3.8×/game** (≈27 placement prompts/game,
+concentrated targets, 4.3 prizes/game, 0.83 prizes/attack); ours fires it **once per ~2.6 games**
+and attacks with **Jet Headbutt (70, any 1 energy, no effect)** instead — 1.5 prizes/game. Root
+cause in code: Phantom Dive costs {R}{P} *specifically*, and the evaluator's `attack_ready` asks
+"is ANY attack affordable?" — Jet Headbutt satisfies it with one energy of any type, so attaching
+the second, type-correct energy earns nothing and the two-turn assembly plan is invisible. Same
+failure class as Infernal Slash (attack-enabling precondition a generic evaluator can't see); the
+Ceruledge fix was never generalized to "value the strongest affordable attack, not any". The
+greedy-pilot gauntlet masked it: 70-damage beatdown beats greedy scripts anyway.
 
 **Resolution** — None possible post-deadline; logged as the campaign's decisive mistake. For any
 future entry: (1) benchmark against the strongest available *pilots* (public rule-based agents),
