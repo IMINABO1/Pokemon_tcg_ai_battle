@@ -197,6 +197,33 @@ remaining hours.
 
 **Status** — ✅ resolved (gauntlet rerunning clean)
 
+## 2026-08-17 — Greedy-pilot gauntlets did not transfer to the real ladder (v0.5 collapse)
+
+**Problem** — v0.5 (Dragapult, the 1000-band's dominant deck) scored 22/24 in local gauntlets
+against the band-winning decks, then went 37-56 (Elo 412) in real ranked play — losing to
+opponents rated 300-500. The final-slot decision was made on evidence that did not transfer.
+
+**Investigation** — Two compounding causes. (a) *Proxy gap:* gauntlet opponents were greedy
+scripts piloting strong decks; real low-band opponents are competent rule-based agents (public
+sample-agent forks), so our measured matchup edges were inflated. (b) *Skill-expression gap:*
+Dragapult's signature attack places six damage counters anywhere — a combinatorial multi-select.
+Our candidate enumeration offers a handful of heuristic subsets (top-k / first-k / windows), which
+cannot express surgical spread targeting; the deck's power is exactly the decision type our search
+is weakest at. The band census's own caveat (Dragapult results track pilot quality) was recorded
+and then under-weighted in the decision.
+
+**Resolution** — None possible post-deadline; logged as the campaign's decisive mistake. For any
+future entry: (1) benchmark against the strongest available *pilots* (public rule-based agents),
+not just strong decks under weak pilots; (2) audit whether a candidate deck's win condition flows
+through a decision type the searcher genuinely optimizes; (3) treat "necessary but not sufficient"
+evidence labels as binding at decision time, not as footnotes.
+
+**Why this over alternatives** — Submitting v6 Lucario (21/24 locally, lower skill floor, its
+attacks need no combinatorial targeting) would likely have out-scored v0.5; it was ranked below
+v0.5 on exactly the evidence that failed to transfer.
+
+**Status** — ❌ unrecoverable (final-slot outcome); lesson recorded for the write-up
+
 ## 2026-08-16 — Branch merge silently mutated validated agent code
 
 **Problem** — After merging `origin/imi` (to push), the working tree's evaluator weights and search

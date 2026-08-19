@@ -62,6 +62,40 @@ Merging `origin/imi` grafted the 08-01 evaluator rebalance onto the overhauled a
 - Whether the Strategy entry needs reproducibility artifacts attached (rules page is login-gated; owner to read the official text).
 - Reconcile the hand-visibility evaluator invariant (xfail'd test) with the shipped visibility-dependent terms — revisit if leaf phases ever diverge.
 
+## Post-mortem: the goal was missed (logged 2026-08-17 at owner's request)
+
+**The goal was a bronze medal (top ~10%, ~rank 690 of 6,892, roughly 800+ Elo). The outcome is
+~top 25% (best entry v0.4b settling ~670).** The failures, named plainly:
+
+1. **v0.5 Dragapult collapsed: 37-56, Elo 412.** The "pass-through" prediction — that it would sail
+   the Grimmsnarl midlands to the summit — was wrong. Root cause: the local gauntlet evidence came
+   from games against *greedy-scripted pilots*, a proxy that flattered us; real low-band opponents
+   include competent rule-based agents. Worse, Dragapult is the highest-skill deck in the pool —
+   Phantom Dive's value is surgical placement of six damage counters, a combinatorial multi-select
+   that our search handles with crude shortlisted subsets. Strong deck, pilot that cannot execute
+   its signature skill. The band census itself warned that Dragapult results track pilot quality;
+   the warning was under-weighted because the deck story was compelling.
+
+2. **Calibration failure (assistant's).** Early favorable samples (a 9-4 run) were reported as
+   thesis confirmation; drops were repeatedly framed as variance. The owner was reassured toward a
+   goal the evidence did not yet support. Predictions should have carried confidence intervals and
+   the proxy-gap caveat every time.
+
+3. **Three weeks lost to an unexamined deck premise.** The Ceruledge deck's fatal rider ("discard 4
+   Fire from hand, else nothing") was discoverable from the card text on day one; it was found on
+   the final day. The evidence loop that produced the ~700 agent in 24 hours existed conceptually
+   from the start — it was applied last instead of first. Bronze was plausibly reachable with that
+   loop running from week one.
+
+4. **The pilot ceiling is real.** v0.4b settling ~670-694 with an ~850-ceiling deck measures the
+   search+evaluator at ~700 strength. Closing that gap needed either the learned evaluator (never
+   integrated: cluster training ran but the featurizer/code was not in the repo before the
+   deadline) or evaluator iteration time that no longer existed.
+
+What survives: the Strategy write-up ($240k pool, due 2026-09-13) judges the thinking, not the
+rank; the mined-evidence loop, the band-stratification study, the 69k-game pipeline, and this
+honest post-mortem are its material.
+
 ## Progress log
 
 ### 2026-07-20 — Week-1 baseline on the ladder
